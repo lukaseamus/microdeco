@@ -1,5 +1,8 @@
 Version: 1.0
+<<<<<<< Updated upstream
 ProjectId: ee81e110-f01d-40da-8f24-0cf8442b5211
+=======
+>>>>>>> Stashed changes
 
 RestoreWorkspace: Default
 SaveWorkspace: Default
