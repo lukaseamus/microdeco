@@ -34,7 +34,7 @@ sequences <- here("DNA", "Sequences") %>%
   print(n = 140)
 
 # 3. Add sample names ####
-samples <- here("DNA", "samples.csv") %>% 
+samples <- here("DNA", "Samples.csv") %>% 
   read_csv() %T>%
   print()
 
@@ -92,10 +92,10 @@ sequences %<>%
         Path %>%
           plotQualityProfile() +
             geom_hline(yintercept = 30) + # 99.9% accuracy
-            # My guesses for quality drop are 260 for forward and
-            # 200 for reverse.
+            # My guesses for quality drop below 30 are 260 for 
+            # forward and 200 for reverse.
             geom_vline(
-              xintercept = if (Direction == "Forward") 280 else 200
+              xintercept = if (Direction == "Forward") 260 else 200
             ) +
             ggtitle(glue("{Sample} ({Direction})")) 
             # Alternatively, ggtitle(Sample, Direction) creates 
@@ -108,11 +108,12 @@ sequences %<>%
 require(patchwork)
 sequences %$%
   wrap_plots(Quality_Plot) %>%
-  ggsave(filename = "quality_plot.pdf", path = here("DNA", "Plots"),
+  ggsave(filename = "quality.pdf", path = here("DNA", "Plots"),
          device = cairo_pdf, height = 100, width = 100, units = "cm")
 # Trim positions 290 and 220 generally look good.
 
-# 5. Filter and trim ####
+# 6. Filter and trim ####
+# Create paths for filtered sequences
 sequences %<>%
   pivot_wider(names_from = Direction, values_from = c(Path, Quality_Plot)) %>%
   mutate(
@@ -123,16 +124,28 @@ sequences %<>%
   ) %T>%
   print()
 
+# My ideal trimming lengths are 260 and 200 bp for quality control, but 
+# I need to ensure enough overlap for merging. I tried 260 and 200 and
+# this lead to a large drop in read length at the merging step. 
+
+# My amplicon length is
+length(341:806) # 466 bp
+# DADA2 needs 20 bp overlap
+260 + 200 - 466 # My planned truncation allows no overlap, so I'll go
+# with 280 and 210 bp instead:
+280 + 210 - 466 # 24 bp overlap
+
 filter <- sequences %$%
   filterAndTrim( # The paths need to be named to be matched correctly.
     fwd = Path_Forward %>% setNames(Sample), filt = Path_Forward_Filtered %>% setNames(Sample),
     rev = Path_Reverse %>% setNames(Sample), filt.rev = Path_Reverse_Filtered %>% setNames(Sample), 
-    truncLen = c(290, 220), # Trim forward to 290 bases and reverse to 220
+    truncLen = c(280, 210), # Trim forward to 280 bases and reverse to 210
     trimLeft = c(length(primer_341F), length(primer_806R)), # Remove primers
-    maxN = 0, maxEE = c(1, 1), truncQ = 2, 
-    rm.phix = TRUE, compress = TRUE, 
-    matchIDs = TRUE, multithread = TRUE
+    maxN = 0, maxEE = c(2, 2), truncQ = 2, 
+    rm.phix = TRUE, compress = TRUE, multithread = TRUE
   )
+
+# Watch files appear in ~/DNA/Sequences/Filtered to track progress
 
 sequences %<>%
   mutate(Reads = filter[,1],
@@ -142,17 +155,20 @@ sequences %<>%
 
 rm(filter)
 
-sequences %$% mean(Prop_Filtered)
-# Around 61% of reads survived filtering.
-
 sequences %>%
+  summarise( across(Prop_Filtered, list( mean = mean, sd = sd )) )
+# 68 ± 4.2 % of reads survived filtering.
+
+( sequences %>%
   ggplot(aes(Reads, Reads_Filtered)) +
       geom_abline(slope = c(1, sequences %$% mean(Prop_Filtered)),
                   colour = c("black", "grey")) +
-      geom_label(aes(label = Sample)) +
-      theme_minimal()
+      geom_label(aes(label = Sample),) +
+      theme_minimal() ) %>%
+  ggsave(filename = "filtering.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, height = 30, width = 30, units = "cm")
 
-# 6. Quality control ####
+# 7. Post-filter quality control ####
 sequences %<>%
   rowwise() %>%
   mutate(
@@ -174,44 +190,31 @@ sequences %<>%
 sequences %$%
   wrap_plots(c(Quality_Plot_Forward_Filtered, 
                Quality_Plot_Reverse_Filtered)) %>%
-  ggsave(filename = "quality_plot_filtered.pdf", device = cairo_pdf, 
-         path = here("Microbes", "DNA", "Plots"),
-         height = 60, width = 60, units = "cm")
+  ggsave(filename = "quality_filtered.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, height = 100, width = 100, units = "cm")
 # Looks good.
 
-# 7. Learn error rates ####
+# 8. Learn error rates ####
+# Samples are ordered by treatment to randomisation is important
 error_forward <- sequences %$% 
   learnErrors(Path_Forward_Filtered,
               multithread = TRUE,
-              randomize = TRUE)
+              randomize = TRUE) 
+
 error_reverse <- sequences %$% 
   learnErrors(Path_Reverse_Filtered,
               multithread = TRUE,
               randomize = TRUE)
 
-plotErrors(error_forward, nominalQ = TRUE)
-plotErrors(error_reverse, nominalQ = TRUE)
+# Plot
+( plotErrors(error_forward, nominalQ = TRUE) +
+  ggtitle("Forward") | 
+  plotErrors(error_reverse, nominalQ = TRUE) +
+  ggtitle("Reverse") ) %>%
+  ggsave(filename = "errors.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, height = 30, width = 60, units = "cm")
 
-# 8. Infer ASVs ####
-# dada_forward <- sequences %$%
-#   dada(
-#     derep = Path_Forward_Filtered,
-#     err = error_forward,
-#     pool = "pseudo",
-#     multithread = TRUE
-#   )
-# 
-# dada_reverse <- sequences %$% 
-#   dada(
-#     derep = Path_Reverse_Filtered,
-#     err = error_reverse,
-#     pool = "pseudo",
-#     multithread = TRUE
-#   )
-# 
-# dada_forward[[1]]
-# dada_reverse[[1]]
-
+# 9. Denoise and infer ASVs ####
 sequences %<>%
   mutate(
     DADA_Forward = dada(
@@ -229,14 +232,7 @@ sequences %<>%
   ) %T>%
   print()
   
-# 9. Merge forward and reverse ####
-# merge <- sequences %$%
-#   mergePairs(
-#   dadaF = dada_forward, derepF = Path_Forward_Filtered %>% setNames(Sample),
-#   dadaR = dada_reverse, derepR = Path_Reverse_Filtered %>% setNames(Sample),
-#   verbose = TRUE
-# )
-
+# 10. Merge forward and reverse ####
 sequences %<>%
   mutate(
     DADA_Merged = mergePairs(
@@ -247,47 +243,68 @@ sequences %<>%
   ) %T>%
   print()
 
-# 10. Sequence table ####
+# 11. Sequence table ####
 # Create naive sequence table
 sequence_table <- sequences %$% 
   makeSequenceTable(DADA_Merged)
+dim(sequence_table) # 65 samples with 48964 ASVs
 
-sequence_table %>%
+( sequence_table %>%
   getSequences() %>%
   str_length() %>%
   tibble(Basepairs = .) %>%
   count(Basepairs, name = "ASVs") %T>%
-  print(n = 63) %>%
-  plot()
+  print(n = 60) %>%
+  ggplot(aes(Basepairs, ASVs)) +
+    geom_point() +
+    geom_line() +
+    scale_y_log10() +
+    theme_minimal() ) %>%
+  ggsave(filename = "ASV_length_naive.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, height = 10, width = 10, units = "cm")
+# Most ASVs are 404 and 429 bp long
 
 sequence_table %>%
   as_tibble() %>%
-  print(n = 21)
+  print(n = 65)
 
 # Remove chimeras
 sequence_table_clean <- removeBimeraDenovo(
   sequence_table, method = "consensus", 
   multithread = TRUE, verbose = TRUE
 )
+# Identified 42552 chimeras out of 48964 ASVs.
 
-sequence_table_clean %>%
+( sequence_table_clean %>%
   getSequences() %>%
   str_length() %>%
   tibble(Basepairs = .) %>%
   count(Basepairs, name = "ASVs") %T>%
-  print(n = 63) %>%
-  plot()
+  print(n = 60) %>%
+  ggplot(aes(Basepairs, ASVs)) +
+    geom_point() +
+    geom_line() +
+    scale_y_log10() +
+    theme_minimal() ) %>%
+  ggsave(filename = "ASV_length_clean.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, height = 10, width = 10, units = "cm")
+# Most ASVs are still 404 and 429 bp long but the spikes are less extreme.
+# There is a strange tail of a few short ASVs less than 380 bp long, which
+# I'll remove:
+sequence_table_clean <- 
+  sequence_table_clean[ , nchar(colnames(sequence_table_clean)) > 380 ]
 
 sequence_table_clean %>%
   as_tibble() %>%
-  print(n = 21)
+  print(n = 65)
 
+# Calculate proportion of ASVs lost during cleaning
 1 - ncol(sequence_table_clean) / ncol(sequence_table)
-# 96% of inferred ASVs are chimeras
+# 87% of inferred ASVs are chimeras or too short
 1 - sum(sequence_table_clean) / sum(sequence_table)
-# But chimeras only account for 19% of merged reads
+# But removed ASVs only account for 18% of merged reads
 
-# 11. Track reads and ASVs ####
+# 12. Track reads and ASVs ####
 # Count reads at various stages after filtering
 sequences %<>%
   mutate(Reads_Forward_Denoised = DADA_Forward %>% 
@@ -304,7 +321,7 @@ sequences %<>%
 
 sequences %>%
   select(Sample, starts_with("Reads")) %>%
-  print(n = 21)
+  print(n = 65)
 
 sequences %<>%
   mutate(Prop_Chimera = 1 - Reads_Sequence_Table_Clean / Reads_Sequence_Table,
@@ -313,7 +330,7 @@ sequences %<>%
 
 sequences %>%
   select(Sample, starts_with("Prop")) %>%
-  print(n = 21)
+  print(n = 65)
 
 # Count ASVs per sample before and after chimera removal
 sequences %<>%
@@ -324,71 +341,104 @@ sequences %<>%
 
 sequences %>%
   select(Sample, contains("ASV")) %>%
-  print(n = 21)
+  print(n = 65)
 
-# 12. Assign taxonomy ####
-# 12.1 Genus-level naive Bayesian classification ####
+sequences %>%
+  summarise( across(starts_with("Prop"), list( mean = mean, sd = sd )) )
+# 18 ± 12 % of reads from chimeras and short ASVs
+# 52 ± 11 % of initial reads retained
+# 32 ± 15 % of initial ASVs retained
+
+sequences %>%
+  summarise( 
+    across(
+      c(Reads_Sequence_Table_Clean, ASVs_Clean), 
+      list( mean = mean, sd = sd )
+    ) 
+  )
+# 40046 ± 12919 final reads per sample
+# 466 ± 176 final ASVs per sample
+
+# Save sequence table
+sequence_table_clean %>%
+  write_rds(here("DNA", "RDS", "sequence_table.rds"))
+
+# 13. Assign taxonomy ####
+# 13.1 Genus-level naive Bayesian classification ####
 taxa_table <- assignTaxonomy(
   seqs = sequence_table_clean,
-  refFasta = here("Microbes", "DNA", "SILVA", 
-                  "silva_nr99_v138.2_toGenus_trainset.fa.gz"),
+  refFasta = here("DNA", "SILVA", "silva_nr99_v138.2_toGenus_trainset.fa.gz"),
   multithread = TRUE
 )
 
 taxa_table %>% as_tibble()
 
-# 12.2 Species exact matching ####
+# 13.2 Species exact matching ####
+# Add species to genus-level table
 taxa_table %<>%
-  addSpecies(refFasta = here("Microbes", "DNA", "SILVA", 
-                             "silva_v138.2_assignSpecies.fa.gz"),
+  addSpecies(refFasta = here("DNA", "SILVA", "silva_v138.2_assignSpecies.fa.gz"),
              allowMultiple = TRUE)
 
 taxa_table %>% as_tibble()
 
+# Assign species directly, skipping genus
 species_table <- assignSpecies(
   seqs = sequence_table_clean,
-  refFasta = here("Microbes", "DNA", "SILVA", 
-                  "silva_v138.2_assignSpecies.fa.gz"),
+  refFasta = here("DNA", "SILVA", "silva_v138.2_assignSpecies.fa.gz"),
   allowMultiple = TRUE
 )
 
 species_table %>% as_tibble()
 
+# Compare to taxa table to species table
 taxa_table %>%
   as_tibble() %>%
   select(Genus, Species) %>%
   bind_cols(species_table %>% 
               as_tibble()) %>%
-  print(n = 1000)
+  filter(Genus...1 != Genus...3 | Species...2 != Species...4 )
 
 # Clearly addSpecies() is not independent because mistakes made by
 # assignTaxonomy() at the genus level are carried through. It is now
-# possible to run naive Bayesian classification to species level:
+# possible to run naive Bayesian classification to species level.
 
-# 12.3 Species-level naive Bayesian classification ####
+# 13.3 Species-level naive Bayesian classification ####
 taxa_table_species <- assignTaxonomy(
   seqs = sequence_table_clean,
-  refFasta = here("Microbes", "DNA", "SILVA", 
-                  "silva_nr99_v138.2_toSpecies_trainset.fa.gz"),
+  refFasta = here("DNA", "SILVA", "silva_nr99_v138.2_toSpecies_trainset.fa.gz"),
   multithread = TRUE
 )
 
 taxa_table_species %>% as_tibble()
 
+# Compare to taxa table to previous taxa table
+taxa_table_species %>%
+  as_tibble() %>%
+  select(Genus, Species) %>%
+  bind_cols(taxa_table %>% 
+              as_tibble() %>%
+              select(Genus, Species)) %>%
+  filter(Genus...1 != Genus...3 | Species...2 != Species...4 ) %>%
+  print(n = 200)
+# 156 don't match
+
+# Compare to taxa table to species table
 taxa_table_species %>%
   as_tibble() %>%
   select(Genus, Species) %>%
   bind_cols(species_table %>% 
               as_tibble()) %>%
-  print(n = 1000)
+  filter(Genus...1 != Genus...3 | Species...2 != Species...4 ) %>%
+  print(n = 200)
+# 71 don't match
 
-# 12.4 Resolve species-level classification ####
-# The best native dada2 taxonomy assignment seems to be to run the 
+# 13.4 Resolve species-level classification ####
+# The best native DADA2 taxonomy assignment seems to be to run the 
 # naive Bayesian classifier to species level and independently run 
-# exact species matching. The two separate estiamtes can then be 
-# cross-validated to get the most complete ASV table. When only
+# exact species matching. The two separate estimates can then be 
+# cross-validated to get the most complete taxa table. When only
 # one approach yields species, that species is accepted. Similarly,
-# when both appraoches agree, there is no conflict. However,
+# when both approaches agree, there is no conflict. However,
 # when both approaches yield different species, the choice is made 
 # according to these rules:
 # 1. If genus and/or species clash, exact matching is trusted
@@ -405,7 +455,7 @@ taxa_table_resolved <-
   as_tibble() %>%
   bind_cols(
     species_table %>%
-      as_tibble() %>% # rename also doesn't work here
+      as_tibble() %>% # rename doesn't work here
       mutate(Genus_exact = Genus, Species_exact = Species) %>%
       select(Genus_exact, Species_exact)
   ) %>%
@@ -421,21 +471,18 @@ taxa_table_resolved <-
       case_when(
         !is.na(Species) & is.na(Species_exact) ~ Species,
         is.na(Species) & !is.na(Species_exact) ~ Species_exact,
-        Species == Species_exact ~ Species,
-        Species != Species_exact & 
-          !Species_exact %>% str_detect("/") ~ Species_exact,
-        Species_exact %>% str_detect("/") &
-          Species_exact %>% str_detect(Species) ~ Species,
-        Species_exact %>% str_detect("/") &
-          !Species_exact %>% str_detect(Species) ~ Species_exact
+        Species_exact %>% str_detect(fixed(Species)) ~ Species,
+        !Species_exact %>% str_detect("/") | 
+          !Species_exact %>% str_detect(fixed(Species)) ~ Species_exact
       )
   ) %T>%
   print()
 
 taxa_table_resolved %>%
-  select(Genus, Species, Genus_exact, Species_exact,
+  select(Genus, Species, Genus_exact, Species_exact, 
          Genus_resolved, Species_resolved) %>%
-  print(n = 500)
+  filter(!if_all(contains("Species"), is.na)) %>%
+  print(n = 1e3)
 # Looks fine but better double-check specific cases.
 
 taxa_table_resolved %>%
@@ -443,82 +490,56 @@ taxa_table_resolved %>%
          Genus_resolved, Species_resolved) %>%
   filter(Genus == Genus_exact & Species == Species_exact) %>%
   print(n = 100)
-# 68 exact genus and species matches.
+# 55 exact genus and species matches.
 
 taxa_table_resolved %>%
   select(Genus, Species, Genus_exact, Species_exact,
          Genus_resolved, Species_resolved) %>%
   filter(Genus == Genus_exact & Species != Species_exact) %>%
+  mutate(Corrected = Species != Species_resolved) %>%
   print(n = 100)
-# 61 cases where genus matches but species clashes. Most cases
+# 65 cases where genus matches but species clashes. Most cases
 # have several options from exact matching that include the naive
-# Bayesian classifier species. In few cases there is a complete
-# species mismatch despite genus match. Everything os resolved
-# properly.
+# Bayesian classifier species. In 6 cases there is a species 
+# mismatch despite genus match and the exact match is favoured. 
+# Everything is resolved properly.
 
 taxa_table_resolved %>%
   select(Genus, Species, Genus_exact, Species_exact,
          Genus_resolved, Species_resolved) %>%
   filter(Genus != Genus_exact) %>%
-  print(n = 100)
-# Few cases where genus is actually mismatched. Mostly different
-# spelling. The only case I'll manually correct is Clostridium
-# innocuum, which is identified by the naive Bayesian classifier
-# but not properly split into the binomial. Exact matching could
-# not differentiate between Clostridium aff. and C. innocuum.
-
-taxa_table_resolved %<>%
-  mutate(Species_resolved = if_else(
-    Species_resolved == "aff./innocuum",
-    "innocuum", Species_resolved
-    ))
-
-taxa_table_resolved %>%
-  select(Genus, Species, Genus_exact, Species_exact,
-         Genus_resolved, Species_resolved) %>%
-  filter(Genus != Genus_exact) %>%
-  print(n = 100)
-# Resolved.
+  print(n = 10)
+# 6 cases where genus is mismatched. In the two cases where
+# species is also assigned it's just spelled differently.
 
 taxa_table_resolved %>%
   select(Genus, Species, Genus_exact, Species_exact,
          Genus_resolved, Species_resolved) %>%
   filter(is.na(Species) & !is.na(Species_exact)) %>%
   print(n = 100)
-# 79 cases where naive Bayesian classifier didn't get the species
-# but exact matching did. Note that sometimes exact matching didn't
-# get the genus despite getting the species.
-
-taxa_table_resolved %>%
-  select(Genus, Species, Genus_exact, Species_exact,
-         Genus_resolved, Species_resolved) %>%
-  filter(is.na(Genus_exact) & !is.na(Species_exact)) %>%
-  print(n = 100)
-# 6 cases where exact matching got species but not genus. Based
-# on two cases where binomials match between methods, the genus
-# was taken from the naive Bayesian classifier in all cases.
+# 74 cases where naive Bayesian classifier didn't get the species
+# but exact matching did.
 
 taxa_table_resolved %>%
   select(Genus, Species, Genus_exact, Species_exact,
          Genus_resolved, Species_resolved) %>%
   filter(!is.na(Species) & is.na(Species_exact)) %>%
   print(n = 500)
-# 389 cases where naive Bayesian classifier got the species but
-# exact matching didn't.
+# 431 cases where naive Bayesian classifier got the species but
+# exact matching got neither genus nor species.
 
 taxa_table_resolved %>%
   select(Genus, Species, Genus_exact, Species_exact,
          Genus_resolved, Species_resolved) %>%
   filter(is.na(Genus) & !is.na(Species_exact)) %>%
   print(n = 100)
-# Only 4 cases where naive Bayesian classifier got neither genus nor
+# Only 1 case where naive Bayesian classifier got neither genus nor
 # species but exact matching did.
 
-# 12.5 New DECIPHER classification algorithm ####
+# 13.5 DECIPHER classification algorithm ####
 require(DECIPHER)
 # The pipe doesn't work with load().
-load(here("Microbes", "DNA", "SILVA", 
-          "SILVA_SSU_r138_2_2024.RData"))
+load(here("DNA", "SILVA", "SILVA_SSU_r138.2.RData"))
 
 taxa_table_decipher <- IdTaxa(
   test = sequence_table_clean %>%
@@ -546,98 +567,70 @@ taxa_table_decipher %<>%
   `rownames<-`( getSequences(sequence_table_clean) )
 
 taxa_table_decipher %>% as_tibble()
-  
+# Generally DECIPHER seems to be worse at classifying species.
+# Let's have a closer look.
+
 taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
+  select(Genus_resolved) %>%
   bind_cols(
     taxa_table_decipher %>%
       as_tibble() %>%
-      select(genus, species)
-  ) %T>%
-  View()
-# Generally DECIPHER seems to be worse at classifying taxa, no 
-# matter what the paper (doi 10.1186/s40168-018-0521-5) says.
-# Let's have a closer look.
+      select(genus)
+  ) %>%
+  filter(Genus_resolved != genus)
+# Genus differences seem to be mostly due to spelling.
+
+taxa_table_resolved %>%
+  select(Genus_resolved) %>%
+  bind_cols(
+    taxa_table_decipher %>%
+      as_tibble() %>%
+      select(genus)
+  ) %>%
+  filter(Genus_resolved != genus & 
+           !genus %>% str_detect(fixed(Genus_resolved))) %>%
+  print(n = 50)
+# Only 47 genera (4.1% of mismatches) are actually differently 
+# classified and DECIPHER mostly assigns Incertae Sedis, 
+# so placeholders.
 
 taxa_table_decipher %>%
   as_tibble() %>%
   drop_na(species)
-# It didn't get a single species.
+# DECIPHER didn't get a single species.
 
 taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
+  select(Genus_resolved) %>%
   bind_cols(
     taxa_table_decipher %>%
       as_tibble() %>%
-      select(genus, species)
+      select(genus)
   ) %>%
-  filter(is.na(Genus_resolved) & !is.na(genus)) %>%
-  print(n = 100)
-# 264 times DECIPHER got the genus where the older method didn't,
-# but most are Incertae Sedis, so placeholders.
+  filter(is.na(Genus_resolved) & !is.na(genus))
+# 766 times DECIPHER got the genus where the previous method didn't,
+# but most are Incertae Sedis.
 
 taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
+  select(Genus_resolved) %>%
   bind_cols(
     taxa_table_decipher %>%
       as_tibble() %>%
-      select(genus, species)
+      select(genus)
   ) %>%
-  filter(!is.na(Genus_resolved) & is.na(genus)) %>%
-  print(n = 100)
-# 913 times the older method got the genus but DECIPHER didn't.
+  filter(!is.na(Genus_resolved) & is.na(genus))
+# 1811 times the previous method got the genus but DECIPHER didn't.
 
 taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
+  select(Genus_resolved) %>%
   bind_cols(
     taxa_table_decipher %>%
       as_tibble() %>%
-      select(genus, species)
+      select(genus)
   ) %>%
-  filter(Genus_resolved == genus) %>%
-  print(n = 100)
-# Genus matched 403 times.
+  filter(genus %>% str_detect(fixed(Genus_resolved)))
+# Genus matched or contained 1844 times.
 
-taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
-  bind_cols(
-    taxa_table_decipher %>%
-      as_tibble() %>%
-      select(genus, species)
-  ) %>%
-  filter(Genus_resolved != genus) %>%
-  print(n = 100)
-# 1057 genus mismatches, but mostly due to different spelling.
-
-taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
-  bind_cols(
-    taxa_table_decipher %>%
-      as_tibble() %>%
-      select(genus, species)
-  ) %>%
-  filter(Genus_resolved != genus &
-           genus %>% str_detect(Genus_resolved %>% 
-                                  fixed())) %>%
-  print(n = 100)
-# 1020 cases (96%) it's due to different spelling 
-# (the old name is contained within the new one).
-
-taxa_table_resolved %>%
-  select(Genus_resolved, Species_resolved) %>%
-  bind_cols(
-    taxa_table_decipher %>%
-      as_tibble() %>%
-      select(genus, species)
-  ) %>%
-  filter(Genus_resolved != genus &
-           !genus %>% str_detect(Genus_resolved %>% 
-                                   fixed())) %>%
-  print(n = 100)
-# In 37 cases it's actually different, but I trust exact matching
-# cross-validated with the older method more.
-
-# 12.6 Resolve all methods ####
+# 13.6 Resolve all methods ####
 # The only part that would improve my current taxa table would be 
 # adding the 264 missing genera, but only if the other taxa match
 # or are absent in the older method.
@@ -653,22 +646,18 @@ taxa_table_resolved %<>%
   ) %>%
   mutate(
     Genus_resolved_decipher =
-      if_else(
+      if_else( # Only add for missing genera if all else matches or is missing
         is.na(Genus_resolved) &
-          ( Phylum_decipher == Phylum | 
-              Phylum_decipher %>%
+          ( Phylum_decipher %>%
               str_detect(Phylum %>% fixed()) |
               is.na(Phylum) ) &
-          ( Class_decipher == Class | 
-              Class_decipher %>%
+          ( Class_decipher %>%
                 str_detect(Class %>% fixed()) |
               is.na(Class) ) &
-          ( Order_decipher == Order | 
-              Order_decipher %>%
+          ( Order_decipher %>%
                 str_detect(Order %>% fixed()) |
               is.na(Order) ) &
-          ( Family_decipher == Family | 
-              Family_decipher %>%
+          ( Family_decipher %>%
                 str_detect(Family %>% fixed()) |
               is.na(Family) ),
         Genus_decipher, Genus_resolved
@@ -676,24 +665,24 @@ taxa_table_resolved %<>%
   ) %T>%
   print()
 
+# Filter cases where DECIPHER resolved a missing genus, but the 
+# remaining taxonomy doesn't match, leading to rejection
 taxa_table_resolved %>%
-  filter(is.na(Genus_resolved) & !is.na(Genus_decipher)) %>%
-  View()
-# Only in two cases the older method had a different order and/or family
-# assigned to an ASV so the NA was not replaced with the genus name.
-
-# Resolve other taxa where they genus was added
-taxa_table_resolved %<>%
-  mutate(
-    Phylum = if_else(is.na(Genus_resolved) & !is.na(Genus_resolved_decipher),
-                     coalesce(Phylum, Phylum_decipher), Phylum),
-    Class = if_else(is.na(Genus_resolved) & !is.na(Genus_resolved_decipher),
-                    coalesce(Class, Class_decipher), Class),
-    Order = if_else(is.na(Genus_resolved) & !is.na(Genus_resolved_decipher),
-                    coalesce(Order, Order_decipher), Order),
-    Family = if_else(is.na(Genus_resolved) & !is.na(Genus_resolved_decipher),
-                     coalesce(Family, Family_decipher), Family)
-  )
+  filter(
+    is.na(Genus_resolved_decipher) & !is.na(Genus_decipher) &
+      (
+        !Family_decipher %>% str_detect(Family %>% fixed()) | is.na(Family) |
+          !Order_decipher %>% str_detect(Order %>% fixed()) | is.na(Order) |
+          !Class_decipher %>% str_detect(Class %>% fixed()) | is.na(Class) |
+          !Phylum_decipher %>% str_detect(Phylum %>% fixed()) | is.na(Phylum)
+      )
+  ) %>%
+  select(Phylum, Class, Order, Family, Phylum_decipher, 
+         Class_decipher, Order_decipher, Family_decipher)
+# Only 14 cases. Everything matches up to class, but in
+# order there are a few mismatches and more in family
+# where most are Incertae Sedis for decipher, so I trust
+# the previous method on these.
   
 # Clean taxa_table_resolved  
 taxa_table_resolved %<>%
@@ -705,20 +694,13 @@ taxa_table_resolved %<>%
 
 # Calculate final resolution
 taxa_table_resolved %>%
-  filter(!is.na(Species)) %>%
-  count() /
-  taxa_table_resolved %>%
-  count()
-# 18% of ASVs are classified to species.
-
-taxa_table_resolved %>%
-  filter(!is.na(Genus)) %>%
-  count() /
-  taxa_table_resolved %>%
-  count()
-# 80% of ASVs are classified to genus.
+  summarise(Prop_Species = sum(!is.na(Species)) / n(),
+            Prop_Genus = sum(!is.na(Genus)) / n())
+# 9.8% of ASVs are classified to species.
+# 70% of ASVs are classified to genus.
 
 # Convert back to matrix
+taxa_table %>% str()
 taxa_table_species %>% str()
 taxa_table_decipher %>% str()
 # This is the matrix structure I need.
@@ -730,40 +712,21 @@ taxa_table_resolved %<>%
   str()
 # Looks fine.
 
-# 13. Save ASVs as phyloseq object ####
+# Save taxa table
+taxa_table_resolved %>%
+  write_rds(here("DNA", "RDS", "taxa_table.rds"))
+
+# 14. Save ASVs with taxonomy as phyloseq object ####
 # Add metadata
-time <- here("Urchins", "Biomass.csv") %>%
+treatments <- here("DNA", "Treatments.csv") %>%
   read_csv() %>%
-  filter(Season == "Autumn") %>%
-  mutate(Deployment = Deployment %>% dmy_hm(),
-         Retrieval = Retrieval %>% dmy_hm(),
-         Days = Deployment %--% Retrieval / ddays()) %>%
-  select(Tank, Days) %T>%
-  print(n = 45)
+  mutate(Date = Date %>% dmy(),
+         Days = Date[1] %--% Date / ddays()) %T>%
+  print(n = 85)
 
 sequences %<>%
-  mutate(
-    Tank = if_else(Sample == "blank",
-                   NA, Sample %>% str_sub(end = 3)),
-    Treatment = case_when(
-      Tank %>% str_detect("C") ~ "Control",
-      Tank %>% str_detect("M") ~ "Mechanical",
-      Tank %>% str_detect("U") ~ "Urchin"
-    ),
-    Antibiotic = case_when(
-      Sample %>% str_sub(start = 4) == "C" ~ "Control",
-      Sample %>% str_sub(start = 4) == "P" ~ "Penicillin",
-      Sample %>% str_sub(start = 4) == "N" ~ "Nystatin",
-      Sample %>% str_sub(start = 4) == "PN" ~ "Penicillin + Nystatin"
-    ),
-    Tissue = case_when(
-      Sample %>% str_detect("f") ~ "Faeces",
-      Sample == "blank" ~ NA,
-      TRUE ~ "Kelp"
-    )
-  ) %>%
-  left_join(time, by = "Tank") %T>%
-  print(n = 21)
+  left_join(treatments) %T>%
+  print(n = 65)
 
 # Build phyloseq object
 require(phyloseq)
@@ -774,8 +737,7 @@ ASV <- phyloseq(
   ),
   sample_data(
     sequences %>% 
-      select(Sample, Tank, Treatment,
-             Antibiotic, Tissue) %>%
+      select(Number, Sample, Date, Days, Tank, Temperature, PAR) %>%
       as.data.frame() %>%
       `rownames<-`( rownames(sequence_table_clean) )
   ),
@@ -794,12 +756,22 @@ ASV %<>%
   `taxa_names<-`( str_c("ASV", ASV %>% ntaxa() %>% seq()) ) %T>%
   print()
 
+otu_table(ASV) # ASVs are now aptly named in both tables
+tax_table(ASV)
+refseq(ASV) # All sequences are preserved
+
 # Simple test
 ASV %>%
-  plot_richness(x = "Treatment", color = "Antibiotic",
-                measures = "Simpson")
-# Seems to work.
+  plot_richness("Sample", measures = c("Shannon", "Simpson"))
 
 # Save phyloseq object
 ASV %>%
-  write_rds(file = here("Microbes", "DNA", "RDS", "ASV.rds"))
+  write_rds(here("DNA", "RDS", "ASV.rds"))
+
+# Save DADA2 pipeline metadata
+sequences %>%
+  select(Number, Sample, contains("Reads"), contains("Prop")) %>%
+  write_rds(here("DNA", "RDS", "pipeline.rds"))
+
+# Clean up
+rm(list = ls())
