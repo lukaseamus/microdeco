@@ -203,12 +203,30 @@ ASV_summary <- ASV_tidy %>%
   ) %T>%
   print(n = 64)
 
+
+# 1.6 Functional classification ####
+# Check taxonomic resolution
+ASV_tidy %>%
+  summarise(
+    Prop_Phylum = sum(!is.na(Phylum)) / n(),
+    Prop_Class = sum(!is.na(Class)) / n(),
+    Prop_Family = sum(!is.na(Family)) / n(),
+    Prop_Genus = sum(!is.na(Genus)) / n(),
+    Prop_Species = sum(!is.na(Species)) / n()
+  )
+# It drops off after genus (70% classified),
+# so this is the most sensible level to
+# functionally classify.
+
+
+
+
 # 2. Explore data ####
 # 2.1 phyloseq ####
 ASV %>%
   plot_richness(
     x = "Days", color = "Treatment",
-    measures = c("Observed", "Shannon", "InvSimpson", "Simpson")
+    measures = c("Observed", "Chao1", "Shannon", "InvSimpson", "Simpson")
   )
 # Some form of decline in diversity with detrital age, but not much.
 
@@ -218,11 +236,10 @@ ASV %>%
     values = c(
       "Alphaproteobacteria" = "purple",
       "Gammaproteobacteria" = "goldenrod"
-    ),
-    na.value = "grey" # other taxa
+    )
   )
 # Mostly Alpha- and Gammaproteobacteria as expected with
-# some highly abundant ASVs (boxes).
+# some highly abundant ASVs (boxes). NA are other taxa.
 
 ASV %>%
   ordinate(method = "NMDS", distance = "bray") %>%
@@ -461,7 +478,7 @@ ASV_tidy %>%
   arrange(desc(Reads)) %>%
   print(n = 100)
 # Colwellia, Pseudahrensia, Arenicella, Hellea, Vibrio and two 
-# unknown genera (Incertae Sedis_939, Incertae Sedis_761) dominate
+# unknown genera (Incertae Sedis_939, Incertae Sedis_761) dominate.
 
 ASV_tidy %>%
   drop_na(Genus) %>%
@@ -492,7 +509,8 @@ ASV_tidy %>%
   mutate(Proportion = Reads / sum(Reads)) %>%
   arrange(desc(Reads)) %>%
   print(n = 100)
-# Lots of classic heterotrophs. I'll make functional groups later.
+# Aquimarina latercula, Sulfitobacter donghicola, 
+# Shewanella surugensis dominate described species.
 
 ASV_tidy %>%
   drop_na(Species) %>%
@@ -514,24 +532,481 @@ ASV_tidy %>%
     mytheme
 
 
-###################
-
-# 2.4 ASVs ####
-# Abundant ASVs
+# 2.3.6 ASVs ####
 ASV_tidy %>%
-  filter()
-  arrange(desc(Abundance)) %>%
+  summarise(Reads = sum(Reads), 
+            Presence = sum(Presence),
+            .by = c(ASV, Family, Genus, Species)) %>%
+  mutate(Proportion = Reads / sum(Reads)) %>%
+  arrange(desc(Reads)) %>%
   print(n = 100)
+# Lots of highly abundant ASVs that are present in most samples
+# (up to 61 out of 64). Most from unknown species with the most
+# abundant ASVs belonging to genera Pseudahrensia, Hellea, 
+# Leucothrix, Arenicella, Litoreibacter, Tateyamaria, Aquimarina etc.
 
+ASV_tidy %>%
+  summarise(Abundance = sum(Abundance),
+            .by = c(ASV, Sample, Days, Treatment)) %>%
+  mutate(Abundance_mean = mean(Abundance), .by = ASV) %>%
+  mutate(ASV = if_else(Abundance_mean < 0.01, "Other", ASV)) %>%
+  summarise(Abundance = sum(Abundance),
+            .by = c(ASV, Sample, Days, Treatment)) %>%
+  ggplot() +
+    geom_point(aes(Days, Abundance, colour = ASV), 
+               shape = 16, alpha = 0.5) +
+    geom_line(data = . %>%
+                summarise(Abundance = mean(Abundance),
+                          .by = c(ASV, Treatment, Days)),
+              aes(Days, Abundance, colour = ASV)) +
+    facet_grid(~ Treatment, scales = "free", space = "free") +
+    mytheme
 
+# 3. NMDS ####
+# 3.1 Calculate ####
+# Raw counts (reads)
+NMDS_reads <- otu_table(ASV) %>%
+  metaMDS(distance = "bray", autotransform = FALSE)
+NMDS_reads$stress # stress = 0.1713856
 
-# 3. nMDS ####
-nMDS <- metaMDS()
+# Relative abundance (normalised reads per sample)
+NMDS_abund <- otu_table(ASV) %>%
+  # Calculate relative abundance with phyloseq function
+  transform_sample_counts(function(x) x / sum(x)) %>%
+  metaMDS(distance = "bray", autotransform = FALSE)
+NMDS_abund$stress # stress = 0.1685437
 
+# 3.2 Add axes to ASV_summary ####
+ASV_summary %<>%
+  full_join(
+    NMDS_reads$points %>%
+      as.data.frame() %>%
+      rownames_to_column("File") %>%
+      as_tibble() %>%
+      rename(MDS1_reads = MDS1, MDS2_reads = MDS2)
+  ) %>%
+  full_join(
+    NMDS_abund$points %>%
+      as.data.frame() %>%
+      rownames_to_column("File") %>%
+      as_tibble() %>%
+      rename(MDS1_abund = MDS1, MDS2_abund = MDS2)
+  ) %T>%
+  print()
 
+# 3.3 Visualise ####
+# 3.3.1 Treatments ####
+# Reads
+ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() +
+    geom_point(aes(MDS1_reads, MDS2_reads, colour = Treatment)) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(MDS1_reads, MDS2_reads)),
+                 aes(MDS1_reads, MDS2_reads,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linewidth = 0.7) +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())
 
+# Relative abundance
+ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() +
+    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment)) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(MDS1_abund, MDS2_abund)),
+                 aes(MDS1_abund, MDS2_abund,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linewidth = 0.7) +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())
+# Hardly different but relative abundance has lower stress and
+# accounts for minor differences in sequencing depth, so I'll 
+# probably use that.
 
-# 4. Diversity ####
+# 3.3.2 Treatments and time ####
+ordisurf(NMDS_reads, sample_data(ASV)$Days)
+ordisurf(NMDS_abund, sample_data(ASV)$Days)
+# Detrital age is fairly linear along NMDS1 axis
 
+# Reads
+ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  left_join( # Calculate centroids
+    ASV_summary %>%
+      mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+      summarise(MDS1_mean = mean(MDS1_reads),
+                MDS2_mean = mean(MDS2_reads),
+                .by = c(Treatment, Days))
+  ) %>%
+  ggplot() +
+    geom_point(aes(MDS1_reads, MDS2_reads, colour = Treatment),
+               shape = 16, alpha = 0.3) +
+    # geom_point(aes(MDS1_mean, MDS2_mean, colour = Treatment),
+    #            shape = 16, size = 2.5) +
+    geom_segment(aes(x = MDS1_reads, y = MDS2_reads, 
+                     xend = MDS1_mean, yend = MDS2_mean,
+                     colour = Treatment), alpha = 0.3) +
+    geom_path(data = . %>% distinct(Days, Treatment, MDS1_mean, MDS2_mean) %>% 
+                mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+                mutate(
+                  Treatment = case_when(
+                    row_number() == 1 ~ "Light 15°C",
+                    row_number() == 2 ~ "Dark 15°C",
+                    row_number() == 3 ~ "Light 20°C",
+                    row_number() == 4 ~ "Light 25°C",
+                    TRUE ~ Treatment
+                  )
+                ),
+              aes(MDS1_mean, MDS2_mean, colour = Treatment),
+              arrow = arrow(length = unit(0.3, "cm"), 
+                            type = "closed", angle = 20)) +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())
 
-# 5. Saprotrophs ####
+# Relative abundance
+ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  left_join(
+    ASV_summary %>%
+      mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+      summarise(MDS1_mean = mean(MDS1_abund),
+                MDS2_mean = mean(MDS2_abund),
+                .by = c(Treatment, Days))
+  ) %>%
+  ggplot() +
+    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
+               shape = 16, alpha = 0.3) +
+    # geom_point(aes(MDS1_mean, MDS2_mean, colour = Treatment),
+    #            shape = 16, size = 2.5) +
+    geom_segment(aes(x = MDS1_abund, y = MDS2_abund, 
+                     xend = MDS1_mean, yend = MDS2_mean,
+                     colour = Treatment), alpha = 0.3) +
+    geom_path(data = . %>% distinct(Days, Treatment, MDS1_mean, MDS2_mean) %>% 
+                mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+                mutate(
+                  Treatment = case_when(
+                    row_number() == 1 ~ "Light 15°C",
+                    row_number() == 2 ~ "Dark 15°C",
+                    row_number() == 3 ~ "Light 20°C",
+                    row_number() == 4 ~ "Light 25°C",
+                    TRUE ~ Treatment
+                  )
+                ),
+              aes(MDS1_mean, MDS2_mean, colour = Treatment),
+              arrow = arrow(length = unit(0.3, "cm"), 
+                            type = "closed", angle = 20)) +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())
+
+# 4. dbRDA ####
+# 4.1 Calculate ####
+# Reads
+dbRDS_reads <- dbrda(
+  otu_table(ASV) ~ Days + Temperature + PAR,
+  data = sample_data(ASV) %>% data.frame(), 
+  distance = "bray"
+)
+dbRDS_reads
+
+# Relative abundance
+dbRDS_abund <- dbrda(
+  otu_table(ASV) %>% 
+    transform_sample_counts(function(x) x / sum(x)) ~ 
+    Days + Temperature + PAR,
+  data = sample_data(ASV) %>% data.frame(), 
+  distance = "bray"
+)
+dbRDS_abund
+# Results are again nearly identical
+
+# 4.2 Extract data ####
+# Add choices = 1:3 for all three axes
+scores_reads <- scores(dbRDS_reads, tidy = TRUE) %T>%
+  print()
+scores_abund <- scores(dbRDS_abund, tidy = TRUE) %T>%
+  print()
+
+# Save effects
+effects <- bind_rows(
+  Reads = scores_reads %>%
+    filter(score == "biplot"),
+  Abundance = scores_abund %>%
+    filter(score == "biplot"),
+  .id = "Response"
+) %>%
+  select(-score) %>%
+  as_tibble() %>%
+  mutate(
+    label = label %>% replace_values(
+      "PAR" ~ "Light",
+      "Days" ~ "Age"
+    )
+  ) %T>%
+  print()
+
+# 4.3 Add axes to ASV_summary ####
+ASV_summary %<>%
+  full_join(
+    scores_reads %>%
+      filter(score == "sites") %>%
+      select(-score) %>%
+      as_tibble() %>%
+      rename(File = label, 
+             dbRDA1_reads = dbRDA1, 
+             dbRDA2_reads = dbRDA2)
+  ) %>%
+  full_join(
+    scores_abund %>%
+      filter(score == "sites") %>%
+      select(-score) %>%
+      as_tibble() %>%
+      rename(File = label, 
+             dbRDA1_abund = dbRDA1, 
+             dbRDA2_abund = dbRDA2)
+  ) %T>%
+  print()
+
+# 4.4 Visualise ####
+# Reads
+require(geomtextpath)
+ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() +
+    geom_point(aes(dbRDA1_reads, dbRDA2_reads, colour = Treatment)) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(dbRDA1_reads, dbRDA2_reads)),
+                 aes(dbRDA1_reads, dbRDA2_reads,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linewidth = 0.7) +
+    geom_textsegment(data = effects %>% filter(Response == "Reads"),
+              aes(x = 1.5, y = 2, xend = dbRDA1+1.5, yend = dbRDA2+2, 
+                  label = label), hjust = 1, family = "Futura", size = 3.5,
+              arrow = arrow(length = unit(0.3, "cm"), 
+                            type = "closed", angle = 20)) +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())
+
+# Relative abundance
+ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
+    geom_point(aes(dbRDA1_abund, dbRDA2_abund*-1, colour = Treatment)) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(dbRDA1_abund, dbRDA2_abund)),
+                 aes(dbRDA1_abund, dbRDA2_abund*-1,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linewidth = 0.7) +
+    geom_textsegment(data = effects %>% filter(Response == "Abundance"),
+              aes(x = 1.5, y = 2, xend = dbRDA1+1.5, yend = dbRDA2*-1+2,
+                  label = label), hjust = 1, family = "Futura", size = 3.5,
+              arrow = arrow(length = unit(0.3, "cm"),
+                            type = "closed", angle = 20)) +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank())
+# Again, hardly different.
+
+# 5. SIMPER ####
+# 5.1 Calculate ####
+# Treatment is the only sensible categorical variable
+SIMPER_reads <- simper(
+  otu_table(ASV), # First five samples are baseline
+  sample_data(ASV)$Treatment %>% replace(1:5, "Baseline")
+) %T>%
+  print()
+
+summary(SIMPER_reads)
+
+SIMPER_abund <- simper(
+  otu_table(ASV) %>% transform_sample_counts(function(x) x / sum(x)),
+  sample_data(ASV)$Treatment %>% replace(1:5, "Baseline")
+) %T>%
+  print()
+
+summary(SIMPER_abund)
+# Both are similar. Proceed with relative abundance version.
+
+# 5.2 Filter ####
+# cusum gives the cumulative proportion of the difference
+# explained by that ASV, so I can filter by a threshold.
+
+# Tidy up
+SIMPER_tidy <- SIMPER_abund %>%
+  map(as_tibble) %>%
+  list_rbind(names_to = "Contrast") %>%
+  mutate(Difference = abs(avb - ava)) %T>%
+  print()
+
+# Filter the fewest ASVs that explain 50% of each difference
+SIMPER_tidy %<>%
+  filter(cusum <= 0.5) %T>%
+  print()
+
+# 5.3 Identify ####
+SIMPER_tidy %>%
+  summarise(Difference_mean = mean(Difference),
+            Difference_sd = sd(Difference),
+            Contrasts = n_distinct(Contrast),
+            .by = species) %>%
+  rename(ASV = species) %>%
+  left_join(
+    tax_table(ASV) %>% 
+      as.data.frame() %>%
+      rownames_to_column("ASV") %>%
+      as_tibble()
+  ) %>%
+  select(-c(Kingdom, Phylum)) %>%
+  arrange(desc(Difference_mean)) %>%
+  print(n = 50)
+# These are also the most abundant ASVs, e.g. Pseudahrensia,
+# Shewanella surugensis, Colwellia, Hellea, Aquimarina latercula etc.
+
+# 6. Figure 3 ####
+# 6.1 Figure 3a ####
+# This is the multidimensional community structure figure.
+# I am using relative abudnance in all cases.
+Fig_3a <- ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() +
+  geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
+             shape = 16) +
+  geom_polygon(data = . %>% group_by(Treatment) %>%
+                 slice(chull(MDS1_abund, MDS2_abund)),
+               aes(MDS1_abund, MDS2_abund,
+                   fill = Treatment, colour = Treatment),
+               alpha = 0.2, linejoin = "round") +
+  scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+  scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+  coord_cartesian(clip = "off") +
+  mytheme +
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.line = element_blank(),
+        panel.border = element_rect(linejoin = "mitre"))
+Fig_3a
+
+# 6.2 Figure 3b ####
+Fig_3b <- ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  left_join(
+    ASV_summary %>%
+      mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+      summarise(MDS1_mean = mean(MDS1_abund),
+                MDS2_mean = mean(MDS2_abund),
+                .by = c(Treatment, Days))
+  ) %>%
+  ggplot() +
+    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
+               shape = 16, alpha = 0.2) +
+    geom_segment(aes(x = MDS1_abund, y = MDS2_abund, 
+                     xend = MDS1_mean, yend = MDS2_mean,
+                     colour = Treatment), alpha = 0.2,
+                 lineend = "round") +
+    geom_path(data = . %>% distinct(Days, Treatment, MDS1_mean, MDS2_mean) %>% 
+                mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+                mutate(
+                  Treatment = case_when(
+                    row_number() == 1 ~ "Light 15°C",
+                    row_number() == 2 ~ "Dark 15°C",
+                    row_number() == 3 ~ "Light 20°C",
+                    row_number() == 4 ~ "Light 25°C",
+                    TRUE ~ Treatment
+                  )
+                ),
+              aes(MDS1_mean, MDS2_mean, colour = Treatment),
+              arrow = arrow(length = unit(0.2, "cm"), 
+                            type = "closed", angle = 20),
+              lineend = "round", linejoin = "round") +
+    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    coord_cartesian(clip = "off") +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          panel.border = element_rect(linejoin = "mitre"))
+
+Fig_3b
+
+# 6.3 Figure 3c ####
+Fig_3c <- ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
+    geom_point(aes(dbRDA1_abund, dbRDA2_abund*-1, colour = Treatment),
+               shape = 16) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(dbRDA1_abund, dbRDA2_abund)),
+                 aes(dbRDA1_abund, dbRDA2_abund*-1,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linejoin = "round") +
+    # geom_textsegment(data = effects %>% filter(Response == "Abundance"),
+    #           aes(x = 1, y = 2, xend = dbRDA1+1, yend = dbRDA2*-1+2,
+    #               label = label), hjust = 1, family = "Futura", size = 3.5, # ~10 pt
+    #           arrow = arrow(length = unit(0.3, "cm"),
+    #                         type = "closed", angle = 20)) +
+    geom_segment(data = effects %>% filter(Response == "Abundance"),
+                 aes(x = 0.9, y = 1.55, xend = dbRDA1+0.9, yend = dbRDA2*-1+1.55),
+                 arrow = arrow(length = unit(0.2, "cm"),
+                               type = "closed", angle = 20),
+                 lineend = "round", linejoin = "round") +
+    geom_text(data = effects %>% filter(Response == "Abundance"),
+              aes(dbRDA1+0.9, dbRDA2*-1+1.55, label = label),
+              hjust = c(0.4, 0.5, 0), vjust = c(1.3, -0.3, -0.3),
+              family = "Futura", size.unit = "pt", size = 10) +
+    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    coord_cartesian(clip = "off") +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          panel.border = element_rect(linejoin = "mitre"))
+Fig_3c
+
+# 6.4 Combined panels ####
+require(patchwork) # Fig_3b has different colour guides, which I remove
+Fig_3 <- ( Fig_3a | Fig_3b + guides(colour = "none") | Fig_3c ) +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = c("a", "b")) &
+  theme(legend.position = "top", legend.justification = 0,
+        plot.tag = element_text(family = "Futura", size = 12, face = "bold"),
+        plot.tag.position = c(0.05, 0.83))
+
+Fig_3 %>%
+  ggsave(filename = "Fig_3.pdf", path = "Figures",
+         device = cairo_pdf, width = 20, height = 8, units = "cm")
+
+# 7. Figure 4 ####
+# 7.1 Figure 4a ####
+Fig_4a # Total abundance
+
+# 7.2 Figure 4b ####
+Fig_4b # Richness
+
+# 7.3 Figure 4d ####
+Fig_4c # Classes > 1% relative abundance
+
+# 7.4 Figure 4d ####
+Fig_4d # Relative abundance of algal hetero-/saprotrophs
