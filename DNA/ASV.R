@@ -190,7 +190,7 @@ ASV_tidy %<>%
 
 # 1.5.2 Sample-level summary ####
 require(vegan)
-ASV_summary <- ASV_tidy %>%
+ASV_sample <- ASV_tidy %>%
   summarise(
     Total = sum(Reads),
     Richness = sum(Presence),
@@ -203,9 +203,8 @@ ASV_summary <- ASV_tidy %>%
   ) %T>%
   print(n = 64)
 
-
 # 1.6 Functional classification ####
-# Check taxonomic resolution
+# 1.6.1 Check taxonomic resolution ####
 ASV_tidy %>%
   summarise(
     Prop_Phylum = sum(!is.na(Phylum)) / n(),
@@ -218,8 +217,73 @@ ASV_tidy %>%
 # so this is the most sensible level to
 # functionally classify.
 
+# 1.6.2 Load literature review ####
+# List of bacterial genera that degrade macroalgae
+sapro <- read_csv("Saprotrophs.csv") %T>%
+  print()
 
+sapro %>%
+  summarise(
+    Studies = n_distinct(Reference),
+    Mentions = n(),
+    .by = Genus
+  ) %>%
+  arrange(desc(Studies)) %>%
+  print(n = 200)
+# 151 distinct genera with by far the most commonly
+# studied being Vibrio, Pseudoalteromonas, Pseudomonas,
+# Alteromonas, Bacillus, Cellulophaga, Zobellia,
+# Halomonas, Shewanella, Cobetia, Flavobacterium,
+# Colwellia, Photobacterium and Algibacter
 
+# I'll filter by this genus list:
+sapro_genus <- sapro %>% pull(Genus) %>% 
+  na.omit() %>% unique() %T>% print()
+
+# But let's look at some of the species names too.
+sapro %>%
+  count(Species) %>%
+  arrange(desc(n)) %>%
+  print(n = 300)
+# Species names such as algicola, fucicola, galactanivorans, alginolyticus,
+# carrageenovora, agarivorans, alginovora, fucanivorans, agarilytica,
+# agarlytica, fucoidanolyticus, ulvanivorans etc. indicate their function.
+
+# Are any of such give-away species names represented in my data?
+sapro_species <- ASV_tidy %>%
+  filter(
+    Species %>% str_detect(
+      "vora|lytic|agar|alg|fuc|lami|ulva|carra"
+    )
+  ) %>%
+  distinct(Genus, Species) %T>%
+  print(n = 40)
+# Some of these obvious algae-degraders are not in any of the genera
+# on the list:
+sapro_species %<>%
+  mutate(Represented = Genus %in% sapro_genus) %>%
+  filter(!Represented) %T>%
+  print()
+# These species are not represented in sapro_genus, because their genus
+# isn't. I'll include all of these as well, but only at species level.
+
+sapro_species %<>%
+  mutate(Binomial = str_c(Genus, Species, sep = " ")) %>%
+  pull(Binomial) %T>%
+  print()
+
+# 1.6.3 Identify saprotrophs ####
+# Identify genera that are likely algae saprotrophs
+ASV_tidy %<>%
+  mutate(
+    Saprotroph = Genus %in% sapro_genus | 
+      str_c(Genus, Species, sep = " ") %in% sapro_species
+  ) %T>%
+  print()
+
+# 1.7 Summarise data ####
+ASV_summary
+###############
 
 # 2. Explore data ####
 # 2.1 phyloseq ####
@@ -244,7 +308,6 @@ ASV %>%
 ASV %>%
   ordinate(method = "NMDS", distance = "bray") %>%
   plot_ordination(physeq = ASV, color = "Treatment")
-# Bit of change in community composition with detrital age
 
 ASV %>%
   plot_heatmap(method = "NMDS", distance = "bray")
@@ -283,30 +346,52 @@ mytheme <- theme(panel.background = element_blank(),
 
 # Total abundance
 ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  summarise(Total = mean(Total), 
+            .by = c(Treatment, Days)) %>%
+  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+  mutate(
+    Treatment = case_when(
+      row_number() == 1 ~ "Light 15°C",
+      row_number() == 2 ~ "Dark 15°C",
+      row_number() == 3 ~ "Light 20°C",
+      row_number() == 4 ~ "Light 25°C",
+      TRUE ~ Treatment
+    )
+  ) %>%
   ggplot() +
-    geom_point(aes(Days, Total, colour = Treatment), 
+    geom_line(aes(Days, Total, colour = Treatment)) +
+    geom_point(data = ASV_summary %>% filter(Days != 0),
+               aes(Days, Total, colour = Treatment), 
                shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(Total = mean(Total), 
-                          .by = c(Treatment, Days)),
-              aes(Days, Total, colour = Treatment)) +
     facet_grid(~ Treatment, scales = "free", space = "free") +
     mytheme
 
 # Richness
 ASV_summary %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  summarise(Richness = mean(Richness), 
+            .by = c(Treatment, Days)) %>%
+  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+  mutate(
+    Treatment = case_when(
+      row_number() == 1 ~ "Light 15°C",
+      row_number() == 2 ~ "Dark 15°C",
+      row_number() == 3 ~ "Light 20°C",
+      row_number() == 4 ~ "Light 25°C",
+      TRUE ~ Treatment
+    )
+  ) %>%
   ggplot() +
-    geom_point(aes(Days, Richness, colour = Treatment), 
+    geom_line(aes(Days, Richness, colour = Treatment)) +
+    geom_point(data = ASV_summary %>% filter(Days != 0),
+               aes(Days, Richness, colour = Treatment), 
                shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(Richness = mean(Richness), 
-                          .by = c(Treatment, Days)),
-              aes(Days, Richness, colour = Treatment)) +
     facet_grid(~ Treatment, scales = "free", space = "free") +
     mytheme
 
 # Spikes in total abundance and richness during the
-# initial deocmposition phase.
+# initial decomposition phase.
 
 # Simpson index
 ASV_summary %>%
@@ -497,7 +582,7 @@ ASV_tidy %>%
               aes(Days, Abundance, colour = Genus)) +
     facet_grid(~ Treatment, scales = "free", space = "free") +
     mytheme
-# Some seem to spike in the early decomposition phase
+# Some seem to spike in the early decomposition phase, some later.
 
 # 2.3.5 Species ####
 ASV_tidy %>%
@@ -530,7 +615,8 @@ ASV_tidy %>%
               aes(Days, Abundance, colour = Binomial)) +
     facet_grid(~ Treatment, scales = "free", space = "free") +
     mytheme
-
+# Shewanella surugensis is only really present at the beginning
+# in the Light 15°C treatment.
 
 # 2.3.6 ASVs ####
 ASV_tidy %>%
@@ -559,6 +645,50 @@ ASV_tidy %>%
                 summarise(Abundance = mean(Abundance),
                           .by = c(ASV, Treatment, Days)),
               aes(Days, Abundance, colour = ASV)) +
+    facet_grid(~ Treatment, scales = "free", space = "free") +
+    mytheme
+
+# 2.4 Saprotrophs ####
+ASV_tidy %>%
+  filter(Saprotroph) %>%
+  summarise(Reads = sum(Reads),
+            Presence = sum(Presence),
+            .by = c(Genus, Species)) %>%
+  mutate(Proportion = Reads / sum(Reads)) %>%
+  arrange(desc(Reads)) %>%
+  print(n = 100)
+# Colwellia, Tateyamaria, Leucothrix, Vibrio, Litoreibacter, Sulfitobacter,
+# Shewanella, Pseudophaeobacter are the most abundant. Surprisingly,
+# Pseudoalteromonas, Pseudomonas and Alteromonas are further down the list.
+
+Shew_list <- ASV_tidy %>%
+  filter(Genus == "Shewanella", Species == "surugensis") %>%
+  distinct(ASV, Genus, Species) %>% pull(ASV)
+
+ASV_tidy %>%
+  filter(Saprotroph & !ASV %in% Shew_list) %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  summarise(Abundance = sum(Abundance),
+            .by = c(Sample, Days, Treatment)) %>%
+  summarise(Abundance = mean(Abundance),
+            .by = c(Treatment, Days)) %>%
+  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+  mutate(
+    Treatment = case_when(
+      row_number() == 1 ~ "Light 15°C",
+      row_number() == 2 ~ "Dark 15°C",
+      row_number() == 3 ~ "Light 20°C",
+      row_number() == 4 ~ "Light 25°C",
+      TRUE ~ Treatment
+    )
+  ) %>%
+  ggplot() +
+    geom_line(aes(Days, Abundance)) +
+    geom_point(data = ASV_tidy %>% filter(Saprotroph & Days != 0) %>%
+                 summarise(Abundance = sum(Abundance),
+                           .by = c(Sample, Days, Treatment)),
+               aes(Days, Abundance), 
+               shape = 16, alpha = 0.5) +
     facet_grid(~ Treatment, scales = "free", space = "free") +
     mytheme
 
@@ -883,7 +1013,7 @@ SIMPER_tidy %>%
 # 6. Figure 3 ####
 # 6.1 Figure 3a ####
 # This is the multidimensional community structure figure.
-# I am using relative abudnance in all cases.
+# I am using relative abundance in all cases.
 Fig_3a <- ASV_summary %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() +
