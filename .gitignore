@@ -48,7 +48,12 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 
+# macOS folder attributes file
 .DS_Store
 
-# Ignore SILVA database files
+# SILVA database files
 SILVA
+
+# Intermediate Microsoft Office files
+~$*.docx
+~$*.xlsx
