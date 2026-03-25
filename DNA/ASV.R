@@ -194,8 +194,8 @@ ASV_sample <- ASV_tidy %>%
   summarise(
     Total = sum(Reads),
     Richness = sum(Presence),
-    D = diversity(Reads, index = "invsimpson"), # inverse Simpson index
-    G = diversity(Reads, index = "simpson"), # Gini-Simpson index
+    D = diversity(Reads, index = "invsimpson"), # inverse Simpson index (1/D)
+    G = diversity(Reads, index = "simpson"), # Gini-Simpson index (1-D)
     E = D / Richness, # Simpson evenness
     H = diversity(Reads, index = "shannon"), # Shannon index
     J = H / log(Richness), # Pielou evenness
@@ -230,13 +230,9 @@ sapro %>%
   ) %>%
   arrange(desc(Studies)) %>%
   print(n = 200)
-# 151 distinct genera with by far the most commonly
-# studied being Vibrio, Pseudoalteromonas, Pseudomonas,
-# Alteromonas, Bacillus, Cellulophaga, Zobellia,
-# Halomonas, Shewanella, Cobetia, Flavobacterium,
-# Colwellia, Photobacterium and Algibacter
+# 170 distinct genera
 
-# I'll filter by this genus list:
+# Extract list:
 sapro_genus <- sapro %>% pull(Genus) %>% 
   na.omit() %>% unique() %T>% print()
 
@@ -264,15 +260,55 @@ sapro_species %<>%
   mutate(Represented = Genus %in% sapro_genus) %>%
   filter(!Represented) %T>%
   print()
-# These species are not represented in sapro_genus, because their genus
-# isn't. I'll include all of these as well, but only at species level.
+# None of these are necessarily laminarin/alginate/fucoidan degraders.
+# Clearly some agar degraders but I won't count those.
 
 sapro_species %<>%
   mutate(Binomial = str_c(Genus, Species, sep = " ")) %>%
   pull(Binomial) %T>%
   print()
 
+# Since we're dealing with Ecklonia radaita detritus, I'll only 
+# filter for known laminarin/alginate/fucoidan degraders.
+
+sapro_phaeo <- sapro %>%
+  filter(
+    !is.na(Genus) & (
+      Medium %>% 
+        str_detect("alginate|fucoidan|laminarin") |
+        Medium %>% 
+          str_detect("Ecklonia|Laminaria|Fucus|Ascophyllum|Macrocystis|Sargassum|Saccharina|Undaria") |
+        Medium %>% str_detect("host") & 
+        Host %>% 
+          str_detect("Ecklonia|Laminaria|Fucus|Ascophyllum|Macrocystis|Sargassum|Saccharina|Undaria")
+    )
+  ) %T>%
+  print()
+
+Table_S1 <- sapro_phaeo %>%
+  summarise(
+    Examples = Species %>% na.omit() %>%
+      unique() %>% sample(min(4, length(.))) %>%
+      str_flatten_comma(),
+    Species = n_distinct(Species[!is.na(Species)]),
+    Studies = n_distinct(Reference),
+    .by = Genus
+  ) %>%
+  arrange(desc(Studies), desc(Species)) %>%
+  print(n = 101)
+
+Table_S1 %>%
+  write_csv(here("Tables", "Table_S1.csv"))
+
+read_docx() %>%
+  body_add_table(value = Table_S1) %>%
+  print(target = here("Tables", "Table_S1.docx"))
+
+
 # 1.6.3 Identify saprotrophs ####
+
+
+
 # Identify genera that are likely algae saprotrophs
 ASV_tidy %<>%
   mutate(

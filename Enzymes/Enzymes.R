@@ -80,6 +80,58 @@ enzymes_medians <- enzymes_summary %>%
   ) %T>%
   print()
 
+# Load carbon and nitrogen data
+CN <- here("Decomposition", "Decomposition.csv") %>%
+  read_csv() %>%
+  mutate(Date = Date %>% dmy(),
+         Day = Date[1] %--% Date / ddays(),
+         Treatment = case_when(
+           PAR == 0 ~ "Dark 15°C",
+           Temperature == 15 ~ "Light 15°C",
+           Temperature == 20 ~ "Light 20°C",
+           Temperature == 25 ~ "Light 25°C"
+         )) %>%
+  filter(!is.na(C_N)) %T>%
+  print()
+
+# Join data
+CN_enzymes <- CN %>%
+  filter(Day != 0) %>% # No matching samples for baseline
+  full_join(enzymes_summary %>% filter(Day != 0)) %>%
+  rename(BG_LAP = BG_LAP_mean) %>%
+  drop_na(C_N, BG_LAP) %T>%
+  print()
+
+CN_medians <- CN_enzymes %>%
+  summarise(
+    C_N = median(C_N),
+    BG_LAP = median(BG_LAP),
+    .by = c(Day, Treatment)
+  ) %T>%
+  print()
+
+CN_t0 <- CN %>%
+  filter(Day == 0) %>%
+  summarise(C_N = median(C_N), .by = Day) %>%
+  uncount(4) %>%
+  mutate(
+    Treatment = case_when(
+      row_number() == 1 ~ "Light 15°C",
+      row_number() == 2 ~ "Dark 15°C",
+      row_number() == 3 ~ "Light 20°C",
+      row_number() == 4 ~ "Light 25°C"
+    )
+  ) %>%
+  left_join(
+    enzymes_medians %>%
+      select(Day, Treatment, BG_LAP)
+  ) %T>%
+  print()
+  
+CN_medians %<>%
+  bind_rows(CN_t0) %>%
+  arrange(Day) %T>%
+  print()
 
 # Define custom theme
 mytheme <- theme(panel.background = element_blank(),
@@ -240,54 +292,39 @@ Fig_2 %>%
          device = cairo_pdf, height = 15, width = 20, units = "cm")
 
 
-
-# Load carbon and nitrogen data
-deco_summary <- here("Decomposition", "RDS", "deco_summary.rds") %>%
-  read_rds %T>%
-  print()
-
-# Join data
-C_N <- deco_summary %>%
-  left_join(
-    enzymes_summary %>%
-      mutate(Treatment = Treatment %>% fct(),
-             Tank = Tank %>% factor())
-  ) %>%
-  rename(BG_LAP = BG_LAP_mean) %>%
-  drop_na(C_N, BG_LAP) %T>%
-  print()
-
-Fig_3 <- C_N %>%
-  left_join(
-    C_N %>% summarise(
-      BG_LAP_median = median(BG_LAP),
-      C_N_median = median(C_N),
-      .by = c(Day, Treatment)
-    )
-  ) %>%
+Fig_3 <- CN_enzymes %>%
   ggplot() +
     geom_point(
       aes(C_N, BG_LAP, colour = Treatment),
-      size = 2.5, shape = 16, alpha = 0.2
+      shape = 16, alpha = 0.2
     ) +
     geom_segment(
+      data = . %>% left_join(
+        CN_medians %>%
+          rename(BG_LAP_median = BG_LAP,
+                 C_N_median = C_N)
+      ),
       aes(x = C_N, xend = C_N_median,
           y = BG_LAP, yend = BG_LAP_median,
           colour = Treatment),
       alpha = 0.2, lineend = "round"
     ) +
     geom_path(
-      data = . %>% distinct(Day, Treatment, C_N_median, BG_LAP_median),
-      aes(C_N_median, BG_LAP_median, colour = Treatment),
+      data = CN_medians,
+      aes(C_N, BG_LAP, colour = Treatment),
       arrow = arrow(length = unit(0.2, "cm"),
                     type = "closed", angle = 20),
       lineend = "round", linejoin = "round"
+    ) +
+    geom_point(
+      data = CN_medians,
+      aes(first(C_N), first(BG_LAP), colour = Treatment),
+      shape = 16
     ) +
     geom_hline(yintercept = 1) +
     # geom_vline(xintercept = 1) +
     scale_colour_manual(values = c("#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"), 
                         guide = "none") +
-    #scale_y_continuous(labels = scales::label_number(accuracy = c(1, 0.1, 1, 0.1))) +
     scale_x_log10(breaks = c(10, 20, 40, 80)) +
     scale_y_log10(breaks = c(0.01, 0.1, 1, 10),
                   labels = scales::label_number(accuracy = c(0.01, 0.1, 1, 1))) +
@@ -302,4 +339,68 @@ Fig_3
 Fig_3 %>%
   ggsave(filename = "Fig_3.pdf", path = "Figures",
          device = cairo_pdf, height = 6, width = 20, units = "cm")
-  
+
+
+# Tables
+
+require(glue)
+
+Table_2a <- CN %>%
+  mutate(Treatment = if_else(Day == 0, "Baseline", Treatment),
+         log_C_N = log(C_N)) %>%
+  summarise(
+    across(
+      c(log_C_N, C_N),
+      list(mean = mean, sd = sd, median = median)
+    ),
+    n = n(),
+    .by = Treatment
+  ) %>%
+  mutate(
+    across(where(is.numeric), ~signif(.x, 2)),
+    C_N = glue("{C_N_median} ({log_C_N_mean} ± {log_C_N_sd})")
+  ) %>%
+  select(-c(ends_with("mean"), ends_with("sd"), ends_with("median"))) %T>%
+  print()
+
+
+Table_2b <- enzymes_summary %>%
+  rename(
+    Glucosidase = Glucosidase_mean,
+    Aminopeptidase = Aminopeptidase_mean,
+    BG_LAP = BG_LAP_mean
+  ) %>%
+  mutate(Treatment = if_else(Day == 0, "Baseline", Treatment),
+         log_BG = log(Glucosidase),
+         log_LAP = log(Aminopeptidase),
+         log_BG_LAP = log(BG_LAP)) %>%
+  summarise(
+    across(
+      c(Glucosidase, Aminopeptidase, BG_LAP,
+        log_BG, log_LAP, log_BG_LAP), 
+      list(mean = mean, sd = sd, median = median)
+    ),
+    n = n(),
+    .by = Treatment
+  ) %>%
+  mutate(
+    across(where(is.numeric), ~signif(.x, 2)),
+    Glucosidase = glue("{Glucosidase_median} ({log_BG_mean} ± {log_BG_sd})"),
+    Aminopeptidase = glue("{Aminopeptidase_median} ({log_LAP_mean} ± {log_LAP_sd})"),
+    BG_LAP = glue("{BG_LAP_median} ({log_BG_LAP_mean} ± {log_BG_LAP_sd})")
+  ) %>%
+  select(-c(ends_with("mean"), ends_with("sd"), ends_with("median"))) %T>%
+  print()
+
+Table_2 <- Table_2a %>% select(-n) %>%
+  full_join(Table_2b %>% select(-n)) %>%
+  select(Treatment, Glucosidase, Aminopeptidase, BG_LAP, C_N) %T>%
+  print()
+
+Table_2 %>%
+  write_csv(here("Tables", "Table_2.csv"))
+
+read_docx() %>%
+  body_add_table(value = Table_2) %>%
+  print(target = here("Tables", "Table_2.docx"))
+
