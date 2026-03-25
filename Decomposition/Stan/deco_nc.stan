@@ -10,8 +10,8 @@ functions{
 data{
   int n;
   vector[n] Day;
-  vector[n] Proportion_mean;
-  vector[n] Proportion_sd;
+  vector[n] Ratio_mean;
+  vector[n] Ratio_sd;
   array[n] int Treatment;
   int n_Treatment;
   array[n] int Tank;
@@ -20,187 +20,121 @@ data{
 
 transformed data{
   // Convert sd to nu because this is easier on the sampler
-  vector[n] Proportion_nu = 
-  Proportion_mean .* ( 1 + Proportion_mean ) ./ Proportion_sd^2;
+  vector[n] Ratio_nu = Ratio_mean .* ( 1 + Ratio_mean ) ./ Ratio_sd^2;
 }
 
 parameters{
   // Parameter describing true, unobserved proportion
-  vector<lower=0>[n] p;
+  vector<lower=0>[n] r;
   
   // Parameters describing mean
   /// Global parameters
-  real log_alpha_mu;
+  real log_delta_mu; // delta = alpha + tau
   real log_mu_mu;
   real log_tau_mu;
   
-  real<lower=0> log_alpha_sigma_t;
+  real<lower=0> log_delta_sigma_t;
   real<lower=0> log_mu_sigma_t;
   real<lower=0> log_tau_sigma_t;
   
-  real<lower=0> log_alpha_sigma_ta;
+  real<lower=0> log_delta_sigma_ta;
   real<lower=0> log_mu_sigma_ta;
   real<lower=0> log_tau_sigma_ta;
   
   /// Treatment parameters
-  vector[n_Treatment] log_alpha_z_t;
+  vector[n_Treatment] log_delta_z_t;
   vector[n_Treatment] log_mu_z_t;
   vector[n_Treatment] log_tau_z_t;
   
   /// Tank parameters
-  vector[n_Tank] log_alpha_z_ta;
+  vector[n_Tank] log_delta_z_ta;
   vector[n_Tank] log_mu_z_ta;
   vector[n_Tank] log_tau_z_ta;
   
   // Parameters describing precision
-  /// Global parameters
-  real log_epsilon_mu;
-  real log_lambda_mu;
-  real log_theta_mu;
+  real<lower=0> epsilon;
+  real<lower=0> lambda;
+  real<lower=0> theta;
+}
 
-  real<lower=0> log_epsilon_sigma_t;
-  real<lower=0> log_lambda_sigma_t;
-  real<lower=0> log_theta_sigma_t;
+transformed parameters{
+  // Convert z-scores
+  vector[n_Treatment] log_delta_t = log_delta_z_t * log_delta_sigma_t + log_delta_mu;
+  vector[n_Treatment] log_mu_t = log_mu_z_t * log_mu_sigma_t + log_mu_mu;
+  vector[n_Treatment] log_tau_t = log_tau_z_t * log_tau_sigma_t + log_tau_mu;
   
-  real<lower=0> log_epsilon_sigma_ta;
-  real<lower=0> log_lambda_sigma_ta;
-  real<lower=0> log_theta_sigma_ta;
-  
-  /// Treatment parameters
-  vector[n_Treatment] log_epsilon_z_t;
-  vector[n_Treatment] log_lambda_z_t;
-  vector[n_Treatment] log_theta_z_t;
-  
-  /// Tank parameters
-  vector[n_Tank] log_epsilon_z_ta;
-  vector[n_Tank] log_lambda_z_ta;
-  vector[n_Tank] log_theta_z_ta;
+  vector[n_Tank] log_delta_ta = log_delta_z_ta * log_delta_sigma_ta + 0;
+  vector[n_Tank] log_mu_ta = log_mu_z_ta * log_mu_sigma_ta + 0;
+  vector[n_Tank] log_tau_ta = log_tau_z_ta * log_tau_sigma_ta + 0;
 }
 
 model{
   // Priors
   /// Likelihood mean
   //// Global parameters
-  log_alpha_mu ~ normal( log(0.001) , 0.3 );
-  log_mu_mu ~ normal( log(40) , 0.3 );
+  log_delta_mu ~ normal( log(0.05) , 0.3 );
+  log_mu_mu ~ normal( log(50) , 0.3 );
   log_tau_mu ~ normal( log(0.06) , 0.3 );
   
-  log_alpha_sigma_t ~ normal( 0 , 0.3 ) T[0,]; // half-normal prior
+  log_delta_sigma_t ~ normal( 0 , 0.3 ) T[0,]; // half-normal prior
   log_mu_sigma_t ~ normal( 0 , 0.3 ) T[0,];
   log_tau_sigma_t ~ normal( 0 , 0.3 ) T[0,];
   
-  log_alpha_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
+  log_delta_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
   log_mu_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
   log_tau_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
   
   //// Treatment parameters
-  log_alpha_z_t ~ normal( 0 , 1 );
+  log_delta_z_t ~ normal( 0 , 1 );
   log_mu_z_t ~ normal( 0 , 1 );
   log_tau_z_t ~ normal( 0 , 1 );
   
-  vector[n_Treatment] log_alpha_t = log_alpha_z_t * log_alpha_sigma_t + log_alpha_mu;
-  vector[n_Treatment] log_mu_t = log_mu_z_t * log_mu_sigma_t + log_mu_mu;
-  vector[n_Treatment] log_tau_t = log_tau_z_t * log_tau_sigma_t + log_tau_mu;
-  
   //// Tank parameters
-  log_alpha_z_ta ~ normal( 0 , 1 );
+  log_delta_z_ta ~ normal( 0 , 1 );
   log_mu_z_ta ~ normal( 0 , 1 );
   log_tau_z_ta ~ normal( 0 , 1 );
   
-  vector[n_Tank] log_alpha_ta = log_alpha_z_ta * log_alpha_sigma_ta + 0;
-  vector[n_Tank] log_mu_ta = log_mu_z_ta * log_mu_sigma_ta + 0;
-  vector[n_Tank] log_tau_ta = log_tau_z_ta * log_tau_sigma_ta + 0;
-  
   /// Likelihood precision
-  //// Global parameters
-  log_epsilon_mu ~ normal( log(4e4) , 0.3 );
-  log_lambda_mu ~ normal( log(0.1) , 0.3 );
-  log_theta_mu ~ normal( log(500) , 0.3 );
-  
-  log_epsilon_sigma_t ~ normal( 0 , 0.3 ) T[0,];
-  log_lambda_sigma_t ~ normal( 0 , 0.3 ) T[0,];
-  log_theta_sigma_t ~ normal( 0 , 0.3 ) T[0,];
-  
-  log_epsilon_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
-  log_lambda_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
-  log_theta_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
-  
-  //// Treatment parameters
-  log_epsilon_z_t ~ normal( 0 , 1 );
-  log_lambda_z_t ~ normal( 0 , 1 );
-  log_theta_z_t ~ normal( 0 , 1 );
-  
-  vector[n_Treatment] log_epsilon_t = log_epsilon_z_t * log_epsilon_sigma_t + log_epsilon_mu;
-  vector[n_Treatment] log_lambda_t = log_lambda_z_t * log_lambda_sigma_t + log_lambda_mu;
-  vector[n_Treatment] log_theta_t = log_theta_z_t * log_theta_sigma_t + log_theta_mu;
-  
-  //// Tank parameters
-  log_epsilon_z_ta ~ normal( 0 , 1 );
-  log_lambda_z_ta ~ normal( 0 , 1 );
-  log_theta_z_ta ~ normal( 0 , 1 );
-  
-  vector[n_Tank] log_epsilon_ta = log_epsilon_z_ta * log_epsilon_sigma_ta + 0;
-  vector[n_Tank] log_lambda_ta = log_lambda_z_ta * log_lambda_sigma_ta + 0;
-  vector[n_Tank] log_theta_ta = log_theta_z_ta * log_theta_sigma_ta + 0;
-  
+  epsilon ~ gamma( square(4e4) / square(2e4) , 4e4 / square(2e4) );
+  lambda ~ exponential( 1 );
+  theta ~ gamma( square(500) / square(250) , 500 / square(250) );
+
   // Model
   /// Likelihood mean
   //// Parameters
-  vector[n] alpha = exp( log_alpha_t[Treatment] + log_alpha_ta[Tank] );
+  vector[n] delta = exp( log_delta_t[Treatment] + log_delta_ta[Tank] );
   vector[n] mu = exp( log_mu_t[Treatment] + log_mu_ta[Tank] );
   vector[n] tau = exp( log_tau_t[Treatment] + log_tau_ta[Tank] );
+  vector[n] alpha = delta - tau;
   
   //// Function
-  vector[n] p_mu = exp(
-      Day .* alpha - ( alpha + tau ) .* 
-      mu ./ 5 .* (
-        log1p_exp( 5 ./ mu .* ( Day - mu ) ) - log1p_exp( -5 )
-      )
-    );
+  vector[n] r_mu = exp(
+    Day .* alpha - ( alpha + tau ) .* mu ./ 5 .* (
+      log1p_exp( 5 ./ mu .* ( Day - mu ) ) - log1p_exp( -5 )
+    )
+  );
   
   /// Likelihood precision
-  //// Parameters
-  vector[n] epsilon = exp( log_epsilon_t[Treatment] + log_epsilon_ta[Tank] );
-  vector[n] lambda = exp( log_lambda_t[Treatment] + log_lambda_ta[Tank] );
-  vector[n] theta = exp( log_theta_t[Treatment] + log_theta_ta[Tank] );
+  // This parameterisation is better for large variance (partial pooling on variance)
+  // vector[n] nu = theta + ( epsilon - theta ) .* exp( -lambda .* Day );
   
-  //// Function
-  vector[n] nu = theta + ( epsilon - theta ) .* exp(-lambda .* Day);
+  // This parameterisation is typically better
+  vector[n] nu = theta + exp( log( epsilon - theta ) - lambda .* Day );
   
   // Beta prime likelihood
-  for ( i in 1:n ) { // loop because betap isn't vectorised
-    p[i] ~ betap( p_mu[i] * ( 1 + nu[i] ) , 2 + nu[i] );
-  }
+  for ( i in 1:n ) r[i] ~ betap( r_mu[i] * ( 1 + nu[i] ) , 2 + nu[i] );
   
   // Beta prime measurement error model
-  for ( i in 1:n ) {
-    Proportion_mean[i] ~ betap(
-      p[i] * ( 1 + Proportion_nu[i] ),
-      2 + Proportion_nu[i]
-    );
-  }
+  for ( i in 1:n ) Ratio_mean[i] ~ betap( 
+    r[i] * ( 1 + Ratio_nu[i] ),
+    2 + Ratio_nu[i]
+  );
+  
+  // Alternative mean-sd parameterisation
   // for ( i in 1:n ) {
-  //   Proportion_mean[i] ~ betap(
-  //     p[i] * ( 1 + p[i] * ( 1 + p[i] ) / Proportion_sd[i]^2 ),
-  //     2 + p[i] * ( 1 + p[i] ) / Proportion_sd[i]^2
+  //   Ratio_mean[i] ~ betap(
+  //     r[i] * ( 1 + r[i] * ( 1 + r[i] ) / Ratio_sd[i]^2 ),
+  //     2 + r[i] * ( 1 + r[i] ) / Ration_sd[i]^2
   //   );
   // }
-}
-
-generated quantities{
-  vector[n_Treatment] log_alpha_t = log_alpha_z_t * log_alpha_sigma_t + log_alpha_mu;
-  vector[n_Treatment] log_mu_t = log_mu_z_t * log_mu_sigma_t + log_mu_mu;
-  vector[n_Treatment] log_tau_t = log_tau_z_t * log_tau_sigma_t + log_tau_mu;
-  
-  vector[n_Tank] log_alpha_ta = log_alpha_z_ta * log_alpha_sigma_ta + 0;
-  vector[n_Tank] log_mu_ta = log_mu_z_ta * log_mu_sigma_ta + 0;
-  vector[n_Tank] log_tau_ta = log_tau_z_ta * log_tau_sigma_ta + 0;
-  
-  vector[n_Treatment] log_epsilon_t = log_epsilon_z_t * log_epsilon_sigma_t + log_epsilon_mu;
-  vector[n_Treatment] log_lambda_t = log_lambda_z_t * log_lambda_sigma_t + log_lambda_mu;
-  vector[n_Treatment] log_theta_t = log_theta_z_t * log_theta_sigma_t + log_theta_mu;
-  
-  vector[n_Tank] log_epsilon_ta = log_epsilon_z_ta * log_epsilon_sigma_ta + 0;
-  vector[n_Tank] log_lambda_ta = log_lambda_z_ta * log_lambda_sigma_ta + 0;
-  vector[n_Tank] log_theta_ta = log_theta_z_ta * log_theta_sigma_ta + 0;
 }
