@@ -151,7 +151,6 @@ ASV %>%
   write_rds(here("DNA", "RDS", "ASV_clean.rds"))
 
 # 1.5 Tidy data ####
-# 1.5.1 ASV level ####
 # Phyloseq is helpful, but in some cases I'll want all info
 # in place. otu_table() is already a species-abundance matrix:
 taxa_are_rows(ASV)
@@ -187,21 +186,6 @@ ASV_tidy %<>%
     .by = Sample # grouping needed for relative abundance
   ) %T>%
   print()
-
-# 1.5.2 Sample-level summary ####
-require(vegan)
-ASV_sample <- ASV_tidy %>%
-  summarise(
-    Total = sum(Reads),
-    Richness = sum(Presence),
-    D = diversity(Reads, index = "invsimpson"), # inverse Simpson index (1/D)
-    G = diversity(Reads, index = "simpson"), # Gini-Simpson index (1-D)
-    E = D / Richness, # Simpson evenness
-    H = diversity(Reads, index = "shannon"), # Shannon index
-    J = H / log(Richness), # Pielou evenness
-    .by = c(File, Number, Sample, Date, Days, Tank, Temperature, PAR, Treatment)
-  ) %T>%
-  print(n = 64)
 
 # 1.6 Functional classification ####
 # 1.6.1 Check taxonomic resolution ####
@@ -300,26 +284,163 @@ Table_S1 <- sapro_phaeo %>%
 Table_S1 %>%
   write_csv(here("Tables", "Table_S1.csv"))
 
+require(officer)
 read_docx() %>%
   body_add_table(value = Table_S1) %>%
   print(target = here("Tables", "Table_S1.docx"))
 
 
 # 1.6.3 Identify saprotrophs ####
-
-
+# Get list
+sapro_phaeo_genus <- sapro_phaeo %>% 
+  pull(Genus) %>% unique() %T>%
+  print()
 
 # Identify genera that are likely algae saprotrophs
 ASV_tidy %<>%
+  mutate(Saprotroph = Genus %in% sapro_phaeo_genus) %T>%
+  print()
+# Unidentified genera are correctly marked NA
+
+# 1.8 Sample-level summary ####
+# 1.8.1 Classes ####
+# Classes accounting for 99%
+ASV_class <- ASV_tidy %>%
+  # Sum relative abundance of ASVs within class per sample
+  summarise(Abundance = sum(Abundance), .by = c(Class, Sample)) %>%
+  # Collapse classes with <1% mean abundance per sample
+  mutate(Abundance_mean = mean(Abundance), .by = Class) %>%
+  mutate(Class = if_else(Abundance_mean < 0.01, "Other", Class)) %>%
+  # Sum relative abundance of ASVs within collapsed class per sample
+  summarise(Abundance = sum(Abundance), .by = c(Class, Sample)) %>%
+  pivot_wider(names_from = Class, values_from = Abundance) %T>%
+  print()
+
+# 1.8.2 Species ####
+# Top 10 species
+ASV_tidy %>%
+  drop_na(Species) %>%
+  summarise(Abundance = sum(Abundance), .by = c(Genus, Species),
+            ASVs = n_distinct(ASV)) %>%
+  slice_max(Abundance, n = 10)
+# Most only have 1 ASV. These are the corresponding unique ASVs:
+ASV_tidy %>%
+  drop_na(Species) %>%
+  summarise(Abundance = sum(Abundance), .by = c(ASV, Genus, Species)) %>%
+  slice_max(Abundance, n = 10)
+
+# Top 10 saprotroph species
+top_sapro <- ASV_tidy %>%
+  filter(Saprotroph & !is.na(Species)) %>%
+  summarise(Abundance = sum(Abundance), .by = c(Genus, Species),
+            ASVs = n_distinct(ASV)) %>%
+  slice_max(Abundance, n = 10) %T>%
+  print()
+# Again, most only have 1 ASV. These are the corresponding unique ASVs:
+ASV_tidy %>%
+  filter(Saprotroph & !is.na(Species)) %>%
+  summarise(Abundance = sum(Abundance), .by = c(ASV, Genus, Species)) %>%
+  slice_max(Abundance, n = 10)
+
+# Sum abundance per sample
+ASV_species <- ASV_tidy %>%
+  mutate(Binomial = str_c(Genus, Species, sep = " ")) %>%
+  filter(Binomial %in% ( top_sapro %$% str_c(Genus, Species, sep = " ") )) %>%
+  summarise(Abundance = sum(Abundance), .by = c(Binomial, Sample)) %>%
+  pivot_wider(names_from = Binomial, values_from = Abundance) %T>%
+  print()
+  
+# 1.8.3 Abundance and diversity ####
+require(vegan)
+ASV_sample <- ASV_tidy %>%
+  summarise(
+    Total = sum(Reads),
+    Richness = sum(Presence),
+    D = diversity(Reads, index = "invsimpson"), # inverse Simpson index (1/D)
+    G = diversity(Reads, index = "simpson"), # Gini-Simpson index (1-D)
+    E = D / Richness, # Simpson evenness
+    H = diversity(Reads, index = "shannon"), # Shannon index
+    J = H / log(Richness), # Pielou evenness
+    Saprotrophs = sum(Abundance[Saprotroph]),
+    .by = c(File, Number, Sample, Date, Days, Tank, Temperature, PAR, Treatment)
+  ) %T>%
+  print(n = 64)
+
+# 1.8.4 Combine ####
+ASV_sample %<>%
+  full_join(ASV_class) %>%
+  full_join(ASV_species) %T>%
+  print()
+
+# 1.8.5 Summarise ####
+require(glue)
+Table_3 <- ASV_sample %>%
   mutate(
-    Saprotroph = Genus %in% sapro_genus | 
-      str_c(Genus, Species, sep = " ") %in% sapro_species
+    # Create baseline treatment
+    Treatment = if_else(Days == 0, "Baseline", Treatment),
+    # Express as 1000 reads per cm^2 of kelp surface area
+    Total = Total * 1e-3 / (4 * pi * 0.4^2),
+    # Convert G and relative abundances to percentages
+    across(c(G, Saprotrophs:`Vibrio penaeicida`), ~ .x * 100)
+  ) %>%
+  # Calculate n per treatment
+  mutate(n = n(), .by = Treatment) %>%
+  select(-c(File:PAR)) %>%
+  pivot_longer(cols = -Treatment, names_to = "Variable") %>%
+  summarise(
+    mean = mean(value),
+    sd = sd(value),
+    .by = c(Treatment, Variable)
+  ) %>%
+  mutate(
+    across(
+      c(mean, sd),
+      ~ case_when(
+        .x < 100 ~ signif(.x, 2),
+        .x < 1e3 ~ signif(.x, 3),
+        .x < 1e4 ~ signif(.x, 4),
+        TRUE ~ signif(.x, 5)
+      )
+    ),
+    value = glue("{mean} ± {sd}")
+  ) %>%
+  select(-c(mean, sd)) %>%
+  pivot_wider(names_from = Treatment, values_from = value) %>%
+  mutate(
+    Variable = if_else(
+      Variable %>% str_detect("Pseudoalteromonas"),
+      "Pseudoalteromonas agarivorans et al.",
+      Variable
+    )
+  ) %>%
+  select(Variable, Baseline, `Dark 15°C`, `Light 15°C`,
+         `Light 20°C`, `Light 25°C`) %T>%
+  print(n = 23)
+
+Table_3 %>%
+  write_csv(here("Tables", "Table_3.csv"))
+
+read_docx() %>%
+  body_add_table(value = Table_3) %>%
+  print(target = here("Tables", "Table_3.docx"))
+
+# For plots
+ASV_medians <- ASV_sample %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  select(-c(Number, Tank, Temperature, PAR)) %>%
+  summarise(across(Total:`Vibrio penaeicida`, median), .by = c(Treatment, Days)) %>%
+  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+  mutate(
+    Treatment = case_when(
+      row_number() == 1 ~ "Light 15°C",
+      row_number() == 2 ~ "Dark 15°C",
+      row_number() == 3 ~ "Light 20°C",
+      row_number() == 4 ~ "Light 25°C",
+      TRUE ~ Treatment
+    )
   ) %T>%
   print()
 
-# 1.7 Summarise data ####
-ASV_summary
-###############
 
 # 2. Explore data ####
 # 2.1 phyloseq ####
@@ -381,113 +502,77 @@ mytheme <- theme(panel.background = element_blank(),
                  text = element_text(family = "Futura"))
 
 # Total abundance
-ASV_summary %>%
-  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
-  summarise(Total = mean(Total), 
-            .by = c(Treatment, Days)) %>%
-  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
-  mutate(
-    Treatment = case_when(
-      row_number() == 1 ~ "Light 15°C",
-      row_number() == 2 ~ "Dark 15°C",
-      row_number() == 3 ~ "Light 20°C",
-      row_number() == 4 ~ "Light 25°C",
-      TRUE ~ Treatment
-    )
-  ) %>%
-  ggplot() +
-    geom_line(aes(Days, Total, colour = Treatment)) +
-    geom_point(data = ASV_summary %>% filter(Days != 0),
-               aes(Days, Total, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, Total, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, Total, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # Richness
-ASV_summary %>%
-  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
-  summarise(Richness = mean(Richness), 
-            .by = c(Treatment, Days)) %>%
-  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
-  mutate(
-    Treatment = case_when(
-      row_number() == 1 ~ "Light 15°C",
-      row_number() == 2 ~ "Dark 15°C",
-      row_number() == 3 ~ "Light 20°C",
-      row_number() == 4 ~ "Light 25°C",
-      TRUE ~ Treatment
-    )
-  ) %>%
-  ggplot() +
-    geom_line(aes(Days, Richness, colour = Treatment)) +
-    geom_point(data = ASV_summary %>% filter(Days != 0),
-               aes(Days, Richness, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, Richness, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, Richness, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # Spikes in total abundance and richness during the
 # initial decomposition phase.
 
 # Simpson index
-ASV_summary %>%
-  ggplot() +
-    geom_point(aes(Days, D, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(D = mean(D), 
-                          .by = c(Treatment, Days)),
-              aes(Days, D, colour = Treatment)) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, D, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, D, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # Gini-Simpson index
-ASV_summary %>%
-  ggplot() +
-    geom_point(aes(Days, G, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(G = mean(G), 
-                          .by = c(Treatment, Days)),
-              aes(Days, G, colour = Treatment)) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, G, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, G, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # Shannon index
-ASV_summary %>%
-  ggplot() +
-    geom_point(aes(Days, H, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(H = mean(H), 
-                          .by = c(Treatment, Days)),
-              aes(Days, H, colour = Treatment)) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, H, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, H, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # Simpson evenness
-ASV_summary %>%
-  ggplot() +
-    geom_point(aes(Days, E, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(E = mean(E), 
-                          .by = c(Treatment, Days)),
-              aes(Days, E, colour = Treatment)) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, E, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, E, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # Pielou evenness
-ASV_summary %>%
-  ggplot() +
-    geom_point(aes(Days, J, colour = Treatment), 
-               shape = 16, alpha = 0.5) +
-    geom_line(data = . %>% 
-                summarise(J = mean(J), 
-                          .by = c(Treatment, Days)),
-              aes(Days, J, colour = Treatment)) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, J, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, J, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # General decline in diversity indices with time, with the
 # exception of the Light 15°C treatment which I have shown
@@ -685,48 +770,14 @@ ASV_tidy %>%
     mytheme
 
 # 2.4 Saprotrophs ####
-ASV_tidy %>%
-  filter(Saprotroph) %>%
-  summarise(Reads = sum(Reads),
-            Presence = sum(Presence),
-            .by = c(Genus, Species)) %>%
-  mutate(Proportion = Reads / sum(Reads)) %>%
-  arrange(desc(Reads)) %>%
-  print(n = 100)
-# Colwellia, Tateyamaria, Leucothrix, Vibrio, Litoreibacter, Sulfitobacter,
-# Shewanella, Pseudophaeobacter are the most abundant. Surprisingly,
-# Pseudoalteromonas, Pseudomonas and Alteromonas are further down the list.
-
-Shew_list <- ASV_tidy %>%
-  filter(Genus == "Shewanella", Species == "surugensis") %>%
-  distinct(ASV, Genus, Species) %>% pull(ASV)
-
-ASV_tidy %>%
-  filter(Saprotroph & !ASV %in% Shew_list) %>%
-  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
-  summarise(Abundance = sum(Abundance),
-            .by = c(Sample, Days, Treatment)) %>%
-  summarise(Abundance = mean(Abundance),
-            .by = c(Treatment, Days)) %>%
-  mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
-  mutate(
-    Treatment = case_when(
-      row_number() == 1 ~ "Light 15°C",
-      row_number() == 2 ~ "Dark 15°C",
-      row_number() == 3 ~ "Light 20°C",
-      row_number() == 4 ~ "Light 25°C",
-      TRUE ~ Treatment
-    )
-  ) %>%
-  ggplot() +
-    geom_line(aes(Days, Abundance)) +
-    geom_point(data = ASV_tidy %>% filter(Saprotroph & Days != 0) %>%
-                 summarise(Abundance = sum(Abundance),
-                           .by = c(Sample, Days, Treatment)),
-               aes(Days, Abundance), 
-               shape = 16, alpha = 0.5) +
-    facet_grid(~ Treatment, scales = "free", space = "free") +
-    mytheme
+ggplot() +
+  geom_line(data = ASV_medians,
+            aes(Days, Saprotrophs, colour = Treatment)) +
+  geom_point(data = ASV_sample,
+             aes(Days, Saprotrophs, colour = Treatment), 
+             shape = 16, alpha = 0.5) +
+  facet_grid(~ Treatment, scales = "free", space = "free") +
+  mytheme
 
 # 3. NMDS ####
 # 3.1 Calculate ####
@@ -743,7 +794,7 @@ NMDS_abund <- otu_table(ASV) %>%
 NMDS_abund$stress # stress = 0.1685437
 
 # 3.2 Add axes to ASV_summary ####
-ASV_summary %<>%
+ASV_sample %<>%
   full_join(
     NMDS_reads$points %>%
       as.data.frame() %>%
@@ -763,7 +814,7 @@ ASV_summary %<>%
 # 3.3 Visualise ####
 # 3.3.1 Treatments ####
 # Reads
-ASV_summary %>%
+ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() +
     geom_point(aes(MDS1_reads, MDS2_reads, colour = Treatment)) +
@@ -779,7 +830,7 @@ ASV_summary %>%
           axis.line = element_blank())
 
 # Relative abundance
-ASV_summary %>%
+ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() +
     geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment)) +
@@ -803,10 +854,10 @@ ordisurf(NMDS_abund, sample_data(ASV)$Days)
 # Detrital age is fairly linear along NMDS1 axis
 
 # Reads
-ASV_summary %>%
+ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   left_join( # Calculate centroids
-    ASV_summary %>%
+    ASV_sample %>%
       mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
       summarise(MDS1_mean = mean(MDS1_reads),
                 MDS2_mean = mean(MDS2_reads),
@@ -841,10 +892,10 @@ ASV_summary %>%
           axis.line = element_blank())
 
 # Relative abundance
-ASV_summary %>%
+ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   left_join(
-    ASV_summary %>%
+    ASV_sample %>%
       mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
       summarise(MDS1_mean = mean(MDS1_abund),
                 MDS2_mean = mean(MDS2_abund),
@@ -924,8 +975,8 @@ effects <- bind_rows(
   ) %T>%
   print()
 
-# 4.3 Add axes to ASV_summary ####
-ASV_summary %<>%
+# 4.3 Add axes to ASV_sample ####
+ASV_sample %<>%
   full_join(
     scores_reads %>%
       filter(score == "sites") %>%
@@ -949,7 +1000,7 @@ ASV_summary %<>%
 # 4.4 Visualise ####
 # Reads
 require(geomtextpath)
-ASV_summary %>%
+ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() +
     geom_point(aes(dbRDA1_reads, dbRDA2_reads, colour = Treatment)) +
@@ -970,7 +1021,7 @@ ASV_summary %>%
           axis.line = element_blank())
 
 # Relative abundance
-ASV_summary %>%
+ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
     geom_point(aes(dbRDA1_abund, dbRDA2_abund*-1, colour = Treatment)) +
@@ -1046,11 +1097,11 @@ SIMPER_tidy %>%
 # These are also the most abundant ASVs, e.g. Pseudahrensia,
 # Shewanella surugensis, Colwellia, Hellea, Aquimarina latercula etc.
 
-# 6. Figure 3 ####
-# 6.1 Figure 3a ####
+# 6. Figure 4 ####
+# 6.1 Figure 4a ####
 # This is the multidimensional community structure figure.
 # I am using relative abundance in all cases.
-Fig_3a <- ASV_summary %>%
+Fig_4a <- ASV_summary %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() +
   geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
@@ -1069,10 +1120,10 @@ Fig_3a <- ASV_summary %>%
         axis.ticks = element_blank(),
         axis.line = element_blank(),
         panel.border = element_rect(linejoin = "mitre"))
-Fig_3a
+Fig_4a
 
-# 6.2 Figure 3b ####
-Fig_3b <- ASV_summary %>%
+# 6.2 Figure 4b ####
+Fig_4b <- ASV_summary %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   left_join(
     ASV_summary %>%
@@ -1113,10 +1164,10 @@ Fig_3b <- ASV_summary %>%
           axis.line = element_blank(),
           panel.border = element_rect(linejoin = "mitre"))
 
-Fig_3b
+Fig_4b
 
-# 6.3 Figure 3c ####
-Fig_3c <- ASV_summary %>%
+# 6.3 Figure 4c ####
+Fig_4c <- ASV_summary %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
     geom_point(aes(dbRDA1_abund, dbRDA2_abund*-1, colour = Treatment),
@@ -1149,30 +1200,166 @@ Fig_3c <- ASV_summary %>%
           axis.ticks = element_blank(),
           axis.line = element_blank(),
           panel.border = element_rect(linejoin = "mitre"))
-Fig_3c
+Fig_4c
 
 # 6.4 Combined panels ####
-require(patchwork) # Fig_3b has different colour guides, which I remove
-Fig_3 <- ( Fig_3a | Fig_3b + guides(colour = "none") | Fig_3c ) +
+require(patchwork) # Fig_4b has different colour guides, which I remove
+Fig_4 <- ( Fig_4a | Fig_4b + guides(colour = "none") | Fig_4c ) +
   plot_layout(guides = "collect") +
   plot_annotation(tag_levels = c("a", "b")) &
   theme(legend.position = "top", legend.justification = 0,
         plot.tag = element_text(family = "Futura", size = 12, face = "bold"),
         plot.tag.position = c(0.05, 0.83))
 
-Fig_3 %>%
-  ggsave(filename = "Fig_3.pdf", path = "Figures",
+Fig_4 %>%
+  ggsave(filename = "Fig_4.pdf", path = "Figures",
          device = cairo_pdf, width = 20, height = 8, units = "cm")
 
-# 7. Figure 4 ####
-# 7.1 Figure 4a ####
-Fig_4a # Total abundance
+# 7. Figure 5 ####
+require(ggh4x)
+Fig_5a <- ggplot() +
+    geom_point(
+      data = ASV_sample,
+      aes(Days, Total * 1e-3 / (4 * pi * 0.4^2), colour = Treatment),
+      size = 2.5, shape = 16, alpha = 0.7
+    ) +
+    geom_line(
+      data = ASV_medians, 
+      aes(Days, Total * 1e-3 / (4 * pi * 0.4^2), colour = Treatment),
+      lineend = "round", linejoin = "round"
+    ) +
+    scale_colour_manual(values = c("#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"), 
+                        guide = "none") +
+    scale_y_continuous(breaks = seq(0, 24, 6)) +
+    facet_grid(~Treatment, scales = "free", space = "free") +
+    facetted_pos_scales(
+      x = list(
+        Treatment == "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 120), breaks = seq(0, 120, 30)),
+        Treatment != "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 60), breaks = seq(0, 60, 30))
+      )
+    ) +
+    labs(x = "Detrital age (days)",
+         y = expression("Reads (×10"^3*" cm"^-2*")")) +
+    coord_cartesian(ylim = c(0, 24), expand = F, clip = "off") +
+    mytheme +
+    theme(axis.title.y = element_text(vjust = 0.5, margin = margin(r = 0)))
+    
+Fig_5a
 
-# 7.2 Figure 4b ####
-Fig_4b # Richness
+Fig_5b <- ggplot() +
+    geom_point(
+      data = ASV_sample,
+      aes(Days, Richness, colour = Treatment),
+      size = 2.5, shape = 16, alpha = 0.7
+    ) +
+    geom_line(
+      data = ASV_medians, 
+      aes(Days, Richness, colour = Treatment),
+      lineend = "round", linejoin = "round"
+    ) +
+    scale_colour_manual(values = c("#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"), 
+                        guide = "none") +
+    scale_y_continuous(breaks = seq(0, 900, 300)) +
+    facet_grid(~Treatment, scales = "free", space = "free") +
+    facetted_pos_scales(
+      x = list(
+        Treatment == "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 120), breaks = seq(0, 120, 30)),
+        Treatment != "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 60), breaks = seq(0, 60, 30))
+      )
+    ) +
+    labs(x = "Detrital age (days)", y = "Number of ASVs") +
+    coord_cartesian(ylim = c(0, 900), expand = F, clip = "off") + 
+    mytheme +
+    theme(axis.title.y = element_text(vjust = 0.33))
+    
+Fig_5b
 
-# 7.3 Figure 4d ####
-Fig_4c # Classes > 1% relative abundance
+Fig_5c <- ggplot() +
+    geom_point(
+      data = ASV_sample,
+      aes(Days, G * 100, colour = Treatment),
+      size = 2.5, shape = 16, alpha = 0.7
+    ) +
+    geom_line(
+      data = ASV_medians, 
+      aes(Days, G * 100, colour = Treatment),
+      lineend = "round", linejoin = "round"
+    ) +
+    scale_colour_manual(values = c("#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"), 
+                        guide = "none") +
+    facet_grid(~Treatment, scales = "free", space = "free") +
+    facetted_pos_scales(
+      x = list(
+        Treatment == "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 120), breaks = seq(0, 120, 30)),
+        Treatment != "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 60), breaks = seq(0, 60, 30))
+      )
+    ) +
+    labs(x = "Detrital age (days)",
+         y = expression("1 − "*italic("D")*" (%)")) +
+    coord_cartesian(ylim = c(60, 100), expand = F, clip = "off") + 
+    mytheme +
+    theme(axis.title.y = element_text(vjust = -0.18))
+    
+Fig_5c
 
-# 7.4 Figure 4d ####
-Fig_4d # Relative abundance of algal hetero-/saprotrophs
+Fig_5d <- ggplot() +
+    geom_point(
+      data = ASV_sample,
+      aes(Days, Saprotrophs * 100, colour = Treatment),
+      size = 2.5, shape = 16, alpha = 0.7
+    ) +
+    geom_line(
+      data = ASV_medians, 
+      aes(Days, Saprotrophs * 100, colour = Treatment),
+      lineend = "round", linejoin = "round"
+    ) +
+    scale_colour_manual(values = c("#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"), 
+                        guide = "none") +
+    facet_grid(~Treatment, scales = "free", space = "free") +
+    facetted_pos_scales(
+      x = list(
+        Treatment == "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 120), breaks = seq(0, 120, 30)),
+        Treatment != "Light 15°C" ~
+          scale_x_continuous(limits = c(0, 60), breaks = seq(0, 60, 30))
+      )
+    ) +
+    labs(x = "Detrital age (days)",
+         y = "Saprotrophs (%)") +
+    coord_cartesian(ylim = c(0, 100), expand = F, clip = "off") + 
+    mytheme +
+    theme(axis.title.y = element_text(vjust = 0.33))
+    
+Fig_5d
+
+Fig_5 <- ( 
+  ( Fig_5a +
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            plot.margin = margin(0, 0.5, 0.2, 0, unit = "cm")) ) / 
+  ( Fig_5b +
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            strip.text = element_blank(),
+            plot.margin = margin(0.5, 0.5, 0.2, 0, unit = "cm")) ) / 
+  ( Fig_5c +
+      theme(axis.title.x = element_blank(),
+            axis.text.x = element_blank(),
+            strip.text = element_blank(),
+            plot.margin = margin(0.5, 0.5, 0.2, 0, unit = "cm")) ) /
+  ( Fig_5d +
+      theme(strip.text = element_blank(),
+            plot.margin = margin(0.5, 0.5, 0.2, 0, unit = "cm")) )
+)
+
+Fig_5
+
+Fig_5 %>%
+  ggsave(filename = "Fig_5.pdf", path = "Figures",
+         device = cairo_pdf, height = 20, width = 20, units = "cm")
