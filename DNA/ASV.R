@@ -54,7 +54,7 @@ ASV_decon <- ASV_df %>%
   print()
 
 ASV_decon$OTUs.removed
-# Unlike decontam, microDecon identified the only two balnks ASVs
+# Unlike decontam, microDecon identified the only two blanks ASVs
 # as contaminants. microDecon suggests to remove all reads of the 
 # two blank ASVs from samples. This is unsurprising when looking
 # at reads of the two ASVs in question across samples:
