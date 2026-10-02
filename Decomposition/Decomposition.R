@@ -1,4 +1,8 @@
-##### Decomposition ####
+##################################
+#### microdeco: decomposition ####
+#### Luka Seamus Wright       ####
+##################################
+
 # 1. Prepare data ####
 # 1.1 Load data ####
 require(tidyverse)
