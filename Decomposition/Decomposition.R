@@ -381,7 +381,7 @@ deco_nc_samples$draws(format = "df") %>%
          width = 100, height = 100, units = "cm", bg = "white")
 
 # 2.5 Prior-posterior comparison ####
-# Hierarchical priors cannot effectively sampled hen centred.
+# Hierarchical priors cannot effectively sampled when centred.
 # Hence the non-centred model will be used to sample priors.
 deco_prior <- prior_samples(
   model = deco_nc_model,
