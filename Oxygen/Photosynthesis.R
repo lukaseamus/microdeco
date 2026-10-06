@@ -84,6 +84,9 @@ prob <- oxygen_summary %>%
 
 rm(deco, oxygen_summary)
 
+prob %>%
+  write_rds(here("Oxygen", "RDS", "prob.rds"))
+
 # 1.3 Explore data ####
 # Define custom theme
 mytheme <- theme(
