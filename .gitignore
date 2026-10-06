@@ -57,3 +57,6 @@ SILVA
 # Intermediate Microsoft Office files
 ~$*.docx
 ~$*.xlsx
+
+# RDS files
+*.rds
