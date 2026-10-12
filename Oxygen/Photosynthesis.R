@@ -149,16 +149,23 @@ prob %>%
 # In contrast to the model used by Wright et al. (2024), this model fixes
 # the intercept at plogis(5) = 0.99 because we know that detritus was alive at
 # the start of the experiment. Hence, there is only one parameter: mu. This 
-# is called the photosynthetic half-life. I am centring the prior on 50 as
-# I have done in the decomposition model.
+# is called the photosynthetic half-life. I am centring the prior on the 
+# expected detrital half-life in the decomposition models: log(2)/0.06 days.
+# This allows me to directly compare detrital and photosynthetic half-lives
+# as I have done in Wright (2026) QPB. One alternative is to centre the prior 
+# on 50 days as I have done for mu in the macroalgal decomposition model, but 
+# this prior is based on the data analysed here which have already been presented 
+# in Wright et al. 2024 (doi: 10.1093/aob/mcad167). Another alternative is to use 
+# 44 days, the average photosynthetic half-life for seaweeds according to Wright 
+# (2026) QPB. These alternatives are not as insightful though.
 
 require(extraDistr)
 tibble(
   n = 1:1e3,
-  log_mu_mu = rnorm( 1e3 , log(50) , 0.3 ),
+  log_mu_mu = rnorm( 1e3 , log( log(2)/0.06 ) , 1 ),
   # There are two factors in the multilevel model (treatment and tank)
-  log_mu_sigma_t = rtnorm( 1e3 , 0 , 0.3 , 0 ),
-  log_mu_sigma_ta = rtnorm( 1e3 , 0 , 0.3 , 0 ),
+  log_mu_sigma_t = rtnorm( 1e3 , 0 , 1 , 0 ),
+  log_mu_sigma_ta = rtnorm( 1e3 , 0 , 1 , 0 ),
   nu = rgamma( 1e3 , 30^2/20^2 , 30/20^2 )
 ) %>%
   mutate(
@@ -202,7 +209,7 @@ prob_c_samples <- prob_c_model$sample(
           iter_warmup = 1e4,
           iter_sampling = 1e4
         ) %T>%
-  print()
+  print() # some chains may fail
 
 prob_nc_samples <- prob_nc_model$sample(
           data = prob %>%
@@ -233,14 +240,14 @@ prob_c_samples$summary() %>%
   summarise(rhat_1.001 = sum(rhat_check) / length(rhat),
             rhat_mean = mean(rhat),
             rhat_sd = sd(rhat))
-# 8% of rhat above 1.001. rhat = 1.00 ± 0.000662.
+# 8% of rhat above 1.001. rhat = 1.00 ± 0.000370.
 
 prob_nc_samples$summary() %>%
   mutate(rhat_check = rhat > 1.001) %>%
   summarise(rhat_1.001 = sum(rhat_check) / length(rhat),
             rhat_mean = mean(rhat),
             rhat_sd = sd(rhat))
-# No rhat above 1.001. rhat = 1.00 ± 0.0000755.
+# No rhat above 1.001. rhat = 1.00 ± 0.0000995.
 # Both models are fine but non-centred is the clear winner.
 
 # 4.2 Chains ####
@@ -402,6 +409,7 @@ prob_prior_posterior_plot %>%
   ggsave(filename = "prob_prior_posterior.pdf", 
          path = here("Oxygen", "Plots"),
          device = cairo_pdf, width = 50, height = 30, units = "cm")
+# The prior for mu does not constrain posteriors, but was an underestimate.
 # Model posteriors look nearly identical. Choose non-centred as optimal model.
 
 rm(prob_nc_prior_posterior_treatment, prob_nc_prior_posterior_tank,

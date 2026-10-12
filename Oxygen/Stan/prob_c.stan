@@ -29,9 +29,9 @@ model{
   // Priors
   /// Likelihood mean
   //// Global parameters
-  log_mu_mu ~ normal( log(50) , 0.3 );
-  log_mu_sigma_t ~ normal( 0 , 0.3 ) T[0,];
-  log_mu_sigma_ta ~ normal( 0 , 0.3 ) T[0,];
+  log_mu_mu ~ normal( log( log(2)/0.06 ) , 1 );
+  log_mu_sigma_t ~ normal( 0 , 1 ) T[0,];
+  log_mu_sigma_ta ~ normal( 0 , 1 ) T[0,];
   
   //// Treatment parameters
   log_mu_t ~ normal( log_mu_mu , log_mu_sigma_t );

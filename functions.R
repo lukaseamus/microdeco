@@ -1,11 +1,11 @@
-prior_samples <- function(model, data, n_name = "n", 
+prior_samples <- function(model, data, n_name = "n",
                           chains = 8, samples = 1e4,
                           adapt_delta = NULL,
                           max_treedepth = NULL) {
   
   empty_data <- data %>%
     purrr::modify_if(.p = ~ typeof(.x) == "double", ~ double(0)) %>%
-    purrr::modify_at(.at = ~ str_match(.x, n_name), ~ 0L)
+    purrr::modify_at(.at = n_name, ~ 0L)
   
   require(cmdstanr)
   prior_samples <- model$sample(

@@ -1000,18 +1000,20 @@ ggplot() +
 # 3. NMDS ####
 # 3.1 Calculate ####
 # Raw counts (reads)
+set.seed(100)
 NMDS_reads <- otu_table(ASV) %>%
   metaMDS(distance = "bray", autotransform = FALSE)
 NMDS_reads$stress # stress = 0.1713856
 
 # Relative abundance (normalised reads per sample)
+set.seed(101)
 NMDS_abund <- otu_table(ASV) %>%
   # Calculate relative abundance with phyloseq function
   transform_sample_counts(function(x) x / sum(x)) %>%
   metaMDS(distance = "bray", autotransform = FALSE)
 NMDS_abund$stress # stress = 0.1685437
 
-# 3.2 Add axes to ASV_summary ####
+# 3.2 Add axes to ASV_sample ####
 ASV_sample %<>%
   full_join(
     NMDS_reads$points %>%
@@ -1146,6 +1148,599 @@ ASV_sample %>%
           axis.text = element_blank(),
           axis.ticks = element_blank(),
           axis.line = element_blank())
+
+ASV_sample %>%
+  write_rds(here("DNA", "RDS", "ASV_sample.rds"))
+
+# 3.4 Prior simulation ####
+# Ordination space is not bounded so a multivariate normal distribution
+# will suit as the likelihood. For one model I want to stratify only by 
+# treatment. For another, I want to additionally stratify by Day. I will 
+# standardise both NMDS axes and use simple standard normal priors.
+
+# Prepare data
+nmds <- ASV_sample %>%
+  select(Days, Treatment, MDS1_abund, MDS2_abund) %>%
+  rename(Day = Days, MDS1 = MDS1_abund, MDS2 = MDS2_abund) %>%
+  mutate(
+    # Standardise NMDS axes
+    MDS1_std = ( MDS1 - mean(MDS1) ) / sd(MDS1),
+    MDS2_std = ( MDS2 - mean(MDS2) ) / sd(MDS2),
+    Treatment = if_else(Day == 0, "Baseline", Treatment) %>% fct(),
+    Day = factor(Day)
+  ) %T>%
+  print()
+
+# Simulate
+require(extraDistr)
+require(ggdensity)
+tibble(
+  n = 1:1e5,
+  mu_mu = rnorm( 1e5 , 0 , 1 ),
+  mu_sigma = rhnorm( 1e5 , 1 ), # half-normal
+  sigma = rexp( 1e5 , 1 )
+) %>%
+  mutate(
+    mu = rnorm( n() , mu_mu , mu_sigma ),
+    y = rbvnorm( n() , mean1 = mu , sd1 = sigma )
+  ) %>%
+  # cor = 0 per row but there is still some correlation introduced
+  # across rows which can be removed by reshuffling with sample()
+  ggplot(aes(y[,1], sample(y[,2]))) +
+    geom_hdr(method = "mvnorm", probs = c(.999, .9, .5)) +
+    geom_point(data = nmds, aes(MDS1_std, MDS2_std)) +
+    coord_cartesian(expand = F, clip = "off") +
+    theme_minimal() +
+    theme(panel.grid = element_blank())
+# Allows for plenty of variation beyond the data.
+
+# 3.5 Stan models ####
+# 3.5.1 Treatment ####
+require(cmdstanr)
+nmds_c_model <- here("DNA", "Stan", "nmds_c.stan") %>% 
+  read_file() %>%
+  write_stan_file() %>%
+  cmdstan_model()
+
+nmds_nc_model <- here("DNA", "Stan", "nmds_nc.stan") %>% 
+  read_file() %>%
+  write_stan_file() %>%
+  cmdstan_model()
+
+require(tidybayes)
+nmds_c_samples <- nmds_c_model$sample(
+          data = nmds %>%
+            mutate(y = cbind(MDS1_std, MDS2_std)) %>%
+            select(Treatment, y) %>%
+            compose_data() %>%
+            c(list(k = 2L)), # L to specify integer
+          chains = 8,
+          parallel_chains = parallel::detectCores(),
+          iter_warmup = 1e4,
+          iter_sampling = 1e4
+        ) %T>%
+  print()
+
+nmds_nc_samples <- nmds_nc_model$sample(
+          data = nmds %>%
+            mutate(y = cbind(MDS1_std, MDS2_std)) %>%
+            select(Treatment, y) %>%
+            compose_data() %>%
+            c(list(k = 2L)),
+          chains = 8,
+          parallel_chains = parallel::detectCores(),
+          iter_warmup = 1e4,
+          iter_sampling = 1e4
+        ) %T>%
+  print()
+
+# Save draws
+nmds_c_samples$draws() %>%
+  write_rds(here("DNA", "RDS", "nmds_c_samples.rds"))
+nmds_c_samples$draws(format = "df") %>%
+  write_rds(here("DNA", "RDS", "nmds_c_samples_df.rds"))
+
+nmds_nc_samples$draws() %>%
+  write_rds(here("DNA", "RDS", "nmds_nc_samples.rds"))
+nmds_nc_samples$draws(format = "df") %>%
+  write_rds(here("DNA", "RDS", "nmds_nc_samples_df.rds"))
+
+# 3.5.2 Treatment x Day ####
+nmds_time_c_model <- here("DNA", "Stan", "nmds_time_c.stan") %>% 
+  read_file() %>%
+  write_stan_file() %>%
+  cmdstan_model()
+
+nmds_time_nc_model <- here("DNA", "Stan", "nmds_time_nc.stan") %>% 
+  read_file() %>%
+  write_stan_file() %>%
+  cmdstan_model()
+
+nmds_time_c_samples <- nmds_time_c_model$sample(
+          data = nmds %>%
+            mutate(y = cbind(MDS1_std, MDS2_std)) %>%
+            select(Treatment, Day, y) %>%
+            compose_data() %>%
+            c(list(k = 2L)),
+          chains = 8,
+          parallel_chains = parallel::detectCores(),
+          iter_warmup = 1e4,
+          iter_sampling = 1e4
+        ) %T>%
+  print()
+
+nmds_time_nc_samples <- nmds_time_nc_model$sample(
+          data = nmds %>%
+            mutate(y = cbind(MDS1_std, MDS2_std)) %>%
+            select(Treatment, Day, y) %>%
+            compose_data() %>%
+            c(list(k = 2L)),
+          chains = 8,
+          parallel_chains = parallel::detectCores(),
+          iter_warmup = 1e4,
+          iter_sampling = 1e4
+        ) %T>%
+  print()
+
+# Save draws
+nmds_time_c_samples$draws() %>%
+  write_rds(here("DNA", "RDS", "nmds_time_c_samples.rds"))
+nmds_time_c_samples$draws(format = "df") %>%
+  write_rds(here("DNA", "RDS", "nmds_time_c_samples_df.rds"))
+
+nmds_time_nc_samples$draws() %>%
+  write_rds(here("DNA", "RDS", "nmds_time_nc_samples.rds"))
+nmds_time_nc_samples$draws(format = "df") %>%
+  write_rds(here("DNA", "RDS", "nmds_time_nc_samples_df.rds"))
+
+# 3.6 Model checks ####
+# 3.6.1 Treatment ####
+# R-hat
+nmds_c_samples$summary() %>%
+  mutate(rhat_check = rhat > 1.001) %>%
+  summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
+            rhat_mean = mean(rhat, na.rm = TRUE),
+            rhat_sd = sd(rhat, na.rm = TRUE))
+# NAs need to be removed because Omega[1,1] and Omega[2,2] have rhat = NA
+# 60% of rhat above 1.001. rhat = 1.00 ± 0.00293.
+
+nmds_nc_samples$summary() %>%
+  mutate(rhat_check = rhat > 1.001) %>%
+  summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
+            rhat_mean = mean(rhat, na.rm = TRUE),
+            rhat_sd = sd(rhat, na.rm = TRUE))
+# No rhat above 1.001. rhat = 1.00 ± 0.000114.
+# Non-centred model is the clear winner.
+
+# Chains
+require(bayesplot)
+nmds_c_chains <- nmds_c_samples$draws(format = "df") %>%
+  mcmc_rank_overlay() +
+  guides(colour = guide_legend(nrow = 1)) +
+  labs(title = "Centred model",
+       y = "Frequency") +
+  coord_cartesian(xlim = c(0, 8e4), ylim = c(0, 1e3),
+                  expand = FALSE, clip = "off") +
+  mytheme
+
+nmds_c_chains %>%
+  ggsave(filename = "nmds_c_chains.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, width = 30, height = 20, units = "cm")
+
+nmds_nc_chains <- nmds_nc_samples$draws(format = "df") %>%
+  mcmc_rank_overlay() +
+  guides(colour = guide_legend(nrow = 1)) +
+  labs(title = "Non-centred model",
+       y = "Frequency") +
+  coord_cartesian(xlim = c(0, 8e4), ylim = c(0, 1e3),
+                  expand = FALSE, clip = "off") +
+  mytheme
+
+nmds_nc_chains %>%
+  ggsave(filename = "nmds_nc_chains.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, width = 30 * 6/5, height = 20 * 6/5, units = "cm")
+# Chains are better for non-centred model (ignore Omega[1,1] and Omega[2,2])
+
+rm(nmds_c_chains, nmds_nc_chains) # Clean up
+gc()
+
+# Pairs
+nmds_c_samples$draws(format = "df") %>%
+  mcmc_pairs(
+    pars = c("mu_mu[1]", "mu_mu[2]", "mu_sigma[1]", "mu_sigma[2]", 
+             "mu[1,1]", "mu[2,1]", "mu[3,1]", "mu[4,1]", "mu[5,1]",
+             "mu[1,2]", "mu[2,2]", "mu[3,2]", "mu[4,2]", "mu[5,2]",
+             "Sigma[1,1]", "Sigma[1,2]", "Sigma[2,2]"),
+    grid_args = list(top = "Centred model")
+  ) %>%
+  ggsave(filename = "nmds_c_pairs.png", path = here("DNA", "Plots"),
+         width = 100, height = 100, units = "cm", bg = "white")
+
+nmds_nc_samples$draws(format = "df") %>%
+  mcmc_pairs(
+    pars = c("mu_mu[1]", "mu_mu[2]", "mu_sigma[1]", "mu_sigma[2]", 
+             "mu[1,1]", "mu[2,1]", "mu[3,1]", "mu[4,1]", "mu[5,1]",
+             "mu[1,2]", "mu[2,2]", "mu[3,2]", "mu[4,2]", "mu[5,2]",
+             "Sigma[1,1]", "Sigma[1,2]", "Sigma[2,2]"),
+    grid_args = list(top = "Non-centred model")
+  ) %>%
+  ggsave(filename = "nmds_nc_pairs.png", path = here("DNA", "Plots"),
+         width = 100, height = 100, units = "cm", bg = "white")
+# Pairs look fine for both models.
+
+# 3.6.2 Treatment x Day ####
+# R-hat
+nmds_time_c_samples$summary() %>%
+  mutate(rhat_check = rhat > 1.001) %>%
+  summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
+            rhat_mean = mean(rhat, na.rm = TRUE),
+            rhat_sd = sd(rhat, na.rm = TRUE))
+# No rhat above 1.001. rhat = 1.00 ± 0.0000978.
+
+nmds_time_nc_samples$summary() %>%
+  mutate(rhat_check = rhat > 1.001) %>%
+  summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
+            rhat_mean = mean(rhat, na.rm = TRUE),
+            rhat_sd = sd(rhat, na.rm = TRUE))
+# No rhat above 1.001. rhat = 1.00 ± 0.0000943.
+# Models are similar.
+
+# Chains
+nmds_time_c_chains <- nmds_time_c_samples$draws(format = "df") %>%
+  mcmc_rank_overlay() +
+  guides(colour = guide_legend(nrow = 1)) +
+  labs(title = "Centred model",
+       y = "Frequency") +
+  coord_cartesian(xlim = c(0, 8e4), ylim = c(0, 1e3),
+                  expand = FALSE, clip = "off") +
+  mytheme
+
+nmds_time_c_chains %>%
+  ggsave(filename = "nmds_time_c_chains.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, width = 60, height = 40, units = "cm")
+
+nmds_time_nc_chains <- nmds_time_nc_samples$draws(format = "df") %>%
+  mcmc_rank_overlay() +
+  guides(colour = guide_legend(nrow = 1)) +
+  labs(title = "Non-centred model",
+       y = "Frequency") +
+  coord_cartesian(xlim = c(0, 8e4), ylim = c(0, 1e3),
+                  expand = FALSE, clip = "off") +
+  mytheme
+
+nmds_time_nc_chains %>%
+  ggsave(filename = "nmds_time_nc_chains.pdf", path = here("DNA", "Plots"),
+         device = cairo_pdf, width = 60 * 13/10, height = 40 * 12/9, units = "cm")
+# Chains are similar (ignore Omega[1,1] and Omega[2,2])
+
+rm(nmds_time_c_chains, nmds_time_nc_chains) # Clean up
+gc()
+
+# Pairs
+nmds_time_c_samples$draws(format = "df") %>%
+  mcmc_pairs(
+    pars = c("mu_mu[1]", "mu_mu[2]", "mu_sigma[1]", "mu_sigma[2]", 
+             "mu[1,1,1]", "mu[2,2,1]", "mu[3,3,1]", "mu[4,4,1]", 
+             "mu[5,5,1]", "mu[2,4,1]", "mu[4,6,1]", "mu[5,7,1]",
+             "mu[1,1,2]", "mu[2,2,2]", "mu[3,3,2]", "mu[4,4,2]", 
+             "mu[5,5,2]", "mu[2,4,2]", "mu[4,6,2]", "mu[5,7,2]",
+             "Sigma[1,1]", "Sigma[1,2]", "Sigma[2,2]"),
+    grid_args = list(top = "Centred model")
+  ) %>%
+  ggsave(filename = "nmds_time_c_pairs.png", path = here("DNA", "Plots"),
+         width = 100, height = 100, units = "cm", bg = "white")
+
+nmds_time_nc_samples$draws(format = "df") %>%
+  mcmc_pairs(
+    pars = c("mu_mu[1]", "mu_mu[2]", "mu_sigma[1]", "mu_sigma[2]", 
+             "mu[1,1,1]", "mu[2,2,1]", "mu[3,3,1]", "mu[4,4,1]", 
+             "mu[5,5,1]", "mu[2,4,1]", "mu[4,6,1]", "mu[5,7,1]",
+             "mu[1,1,2]", "mu[2,2,2]", "mu[3,3,2]", "mu[4,4,2]", 
+             "mu[5,5,2]", "mu[2,4,2]", "mu[4,6,2]", "mu[5,7,2]",
+             "Sigma[1,1]", "Sigma[1,2]", "Sigma[2,2]"),
+    grid_args = list(top = "Non-centred model")
+  ) %>%
+  ggsave(filename = "nmds_time_nc_pairs.png", path = here("DNA", "Plots"),
+         width = 100, height = 100, units = "cm", bg = "white")
+# Pairs look fine for both models.
+
+# 3.7 Prior-posterior comparison ####
+# 3.7.1 Treatment ####
+source("functions.R")
+nmds_prior <- prior_samples(
+  model = nmds_nc_model,
+  data = nmds %>%
+    mutate(y = cbind(MDS1_std, MDS2_std)) %>%
+    select(Treatment, y) %>%
+    compose_data() %>%
+    c(list(k = 2L))
+)
+
+# Centred model
+nmds_c_prior_posterior <- nmds_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_c_samples,
+    group = nmds %>% select(Treatment),
+    parameters = c("mu_mu[k]", "mu_sigma[k]", "mu[Treatment,k]"),
+    format = "long"
+  ) %>%
+  prior_posterior_plot(
+    group_name = "Treatment",
+    second_group_name = "k"
+  ) +
+  scale_x_continuous(
+    labels = scales::label_number(style_negative = "minus")
+  ) +
+  labs(title = "Centred model") +
+  coord_cartesian(expand = FALSE) +
+  mytheme +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank())
+
+# Non-centred model
+nmds_nc_prior_posterior <- nmds_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_nc_samples,
+    group = nmds %>% select(Treatment),
+    parameters = c("mu_mu[k]", "mu_sigma[k]", "mu[Treatment,k]"),
+    format = "long"
+  ) %>%
+  prior_posterior_plot(
+    group_name = "Treatment",
+    second_group_name = "k"
+  ) +
+  scale_x_continuous(
+    labels = scales::label_number(style_negative = "minus")
+  ) +
+  labs(title = "Non-centred model") +
+  coord_cartesian(expand = FALSE) +
+  mytheme +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank())
+
+# Combine
+require(patchwork)
+nmds_prior_posterior <- nmds_c_prior_posterior | nmds_nc_prior_posterior
+
+nmds_prior_posterior %>%
+  ggsave(filename = "nmds_prior_posterior.pdf", 
+         path = here("DNA", "Plots"),
+         device = cairo_pdf, width = 50, height = 30, units = "cm")
+# The non-centred model is better. See for example k1, Baseline mu and mu_sigma.
+# Choose non-centred model.
+
+# 3.7.2 Treatment x Day ####
+nmds_time_prior <- prior_samples(
+  model = nmds_time_nc_model,
+  data = nmds %>%
+    mutate(y = cbind(MDS1_std, MDS2_std)) %>%
+    select(Treatment, Day, y) %>%
+    compose_data() %>%
+    c(list(k = 2L))
+)
+
+# Centred model
+nmds_time_c_prior_posterior <- nmds_time_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_time_c_samples,
+    group = nmds %>% select(Treatment, Day),
+    parameters = c("mu_mu[k]", "mu_sigma[k]", "mu[Treatment,Day,k]"),
+    format = "long"
+  ) %>%
+  prior_posterior_plot(
+    group_name = "Treatment",
+    second_group_name = "k"
+  ) +
+  ggh4x::facet_nested_wrap( # visualise Day
+    facets = vars(.variable, Treatment, Day, k), 
+    scales = "free", nest_line = TRUE
+  ) +
+  scale_x_continuous(
+    labels = scales::label_number(style_negative = "minus")
+  ) +
+  labs(title = "Centred model") +
+  coord_cartesian(expand = FALSE) +
+  mytheme +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank())
+
+# Non-centred model
+nmds_time_nc_prior_posterior <- nmds_time_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_time_nc_samples,
+    group = nmds %>% select(Treatment, Day),
+    parameters = c("mu_mu[k]", "mu_sigma[k]", "mu[Treatment,Day,k]"),
+    format = "long"
+    ) %>%
+  prior_posterior_plot(
+    group_name = "Treatment",
+    second_group_name = "k"
+  ) +
+  ggh4x::facet_nested_wrap( # visualise Day
+    facets = vars(.variable, Treatment, Day, k), 
+    scales = "free", nest_line = TRUE
+  ) +
+  scale_x_continuous(
+    labels = scales::label_number(style_negative = "minus")
+  ) +
+  labs(title = "Non-centred model") +
+  coord_cartesian(expand = FALSE) +
+  mytheme +
+  theme(axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title = element_blank())
+
+# Combine
+nmds_time_prior_posterior <- nmds_time_c_prior_posterior | 
+  nmds_time_nc_prior_posterior
+
+nmds_time_prior_posterior %>%
+  ggsave(filename = "nmds_time_prior_posterior.pdf", 
+         path = here("DNA", "Plots"),
+         device = cairo_pdf, width = 100, height = 60, units = "cm")
+# Models are very similar. Choose non-centred model.
+
+rm( # Clean up
+  nmds_nc_prior_posterior, nmds_c_prior_posterior, nmds_prior_posterior,
+  nmds_time_nc_prior_posterior, nmds_time_c_prior_posterior, nmds_time_prior_posterior,
+  nmds_c_model, nmds_c_samples, nmds_time_c_model, nmds_time_c_samples
+) 
+gc()
+
+# 3.8 Parameters ####
+# 3.8.1 Treatment ####
+# Global (across treatments)
+nmds_prior_posterior_global <- nmds_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_nc_samples,
+    parameters = c("mu_mu[k]", "mu_sigma[k]"),
+    format = "short"
+  ) %>%
+  mutate( 
+    # Calculate mu for unobserved treatments
+    mu = rnorm( n() , mu_mu , mu_sigma ),
+    # Recover axes names
+    k = if_else(k == 1, "MDS1", "MDS2") %>% fct()
+  ) %>%
+  select(starts_with("."), distribution, k, mu) %>%
+  mutate(
+    # Reverse standardisation
+    mu = if_else(
+      k == "MDS1",
+      mu * sd(nmds$MDS1) + mean(nmds$MDS1),
+      mu * sd(nmds$MDS2) + mean(nmds$MDS2)
+    )
+  ) %T>%
+  print()
+
+nmds_prior_posterior_global %>%
+  pivot_longer(cols = -c(starts_with("."), distribution, k),
+               names_to = "parameter") %>%
+  summarise(mean = mean(value), sd = sd(value), n = n(),
+            .by = c(distribution, k, parameter)) %>%
+  arrange(parameter)
+
+# Treatments
+nmds_prior_posterior <- nmds_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_nc_samples,
+    group = nmds %>% select(Treatment),
+    parameters = c("mu[Treatment,k]"),
+    format = "short"
+  ) %>% # Remove redundant priors (keep only Baseline prior)
+  filter(Treatment == "Baseline" & distribution == "prior" |
+           distribution == "posterior") %>%
+  mutate( # Embed prior in treatment
+    Treatment = if_else(
+      distribution == "prior", "Prior", Treatment
+    ) %>% fct(),
+    # Recover axes names
+    k = if_else(k == 1, "MDS1", "MDS2") %>% fct(),
+    # Reverse standardisation
+    mu = if_else(
+      k == "MDS1",
+      mu * sd(nmds$MDS1) + mean(nmds$MDS1),
+      mu * sd(nmds$MDS2) + mean(nmds$MDS2)
+    )
+  ) %>%
+  select(starts_with("."), Treatment, k, mu) %T>%
+  print()
+
+nmds_prior_posterior %>%
+  pivot_longer(cols = -c(starts_with("."), Treatment, k),
+               names_to = "parameter") %>%
+  summarise(mean = mean(value), sd = sd(value), n = n(),
+            .by = c(Treatment, k, parameter)) %>%
+  arrange(parameter)
+
+# Save parameter distributions
+nmds_prior_posterior_global %>%
+  write_rds(here("DNA", "RDS", "nmds_prior_posterior_global.rds"))
+nmds_prior_posterior %>%
+  write_rds(here("DNA", "RDS", "nmds_prior_posterior.rds"))
+
+# 3.8.2 Treatment x Day ####
+# Global (across treatments and days)
+nmds_time_prior_posterior_global <- nmds_time_prior %>% 
+  prior_posterior_draws(
+    posterior_samples = nmds_time_nc_samples,
+    parameters = c("mu_mu[k]", "mu_sigma[k]"),
+    format = "short"
+  ) %>%
+  mutate( 
+    # Calculate mu for unobserved treatments and days
+    mu = rnorm( n() , mu_mu , mu_sigma ),
+    # Recover axes names
+    k = if_else(k == 1, "MDS1", "MDS2") %>% fct()
+  ) %>%
+  select(starts_with("."), distribution, k, mu) %>%
+  mutate(
+    # Reverse standardisation
+    mu = if_else(
+      k == "MDS1",
+      mu * sd(nmds$MDS1) + mean(nmds$MDS1),
+      mu * sd(nmds$MDS2) + mean(nmds$MDS2)
+    )
+  ) %T>%
+  print()
+
+nmds_time_prior_posterior_global %>%
+  pivot_longer(cols = -c(starts_with("."), distribution, k),
+               names_to = "parameter") %>%
+  summarise(mean = mean(value), sd = sd(value), n = n(),
+            .by = c(distribution, k, parameter)) %>%
+  arrange(parameter)
+
+# Treatments and days
+nmds_time_prior_posterior <- nmds %>%
+  distinct(Treatment, Day) %>%
+  left_join( # Select only Treatment-Day combinations that exist in data
+    nmds_time_prior %>% 
+      prior_posterior_draws(
+        posterior_samples = nmds_time_nc_samples,
+        group = nmds %>% select(Treatment, Day),
+        parameters = c("mu[Treatment,Day,k]"),
+        format = "short"
+      )
+  ) %>% # Remove redundant priors (keep only Baseline prior)
+  filter(Treatment == "Baseline" & distribution == "prior" |
+           distribution == "posterior") %>%
+  mutate( # Embed prior in treatment
+    Treatment = if_else(
+      distribution == "prior", "Prior", Treatment
+    ) %>% fct(),
+    # Recover axes names
+    k = if_else(k == 1, "MDS1", "MDS2") %>% fct(),
+    # Reverse standardisation
+    mu = if_else(
+      k == "MDS1",
+      mu * sd(nmds$MDS1) + mean(nmds$MDS1),
+      mu * sd(nmds$MDS2) + mean(nmds$MDS2)
+    )
+  ) %>%
+  select(starts_with("."), Treatment, Day, k, mu) %T>%
+  print()
+
+nmds_time_prior_posterior %>%
+  pivot_longer(cols = -c(starts_with("."), Treatment, Day, k),
+               names_to = "parameter") %>%
+  summarise(mean = mean(value), sd = sd(value), n = n(),
+            .by = c(Treatment, Day, k, parameter)) %>%
+  arrange(parameter) %>%
+  print(n = 38)
+
+# Save parameter distributions
+nmds_time_prior_posterior_global %>%
+  write_rds(here("DNA", "RDS", "nmds_time_prior_posterior_global.rds"))
+nmds_time_prior_posterior %>%
+  write_rds(here("DNA", "RDS", "nmds_time_prior_posterior.rds"))
 
 # 4. dbRDA ####
 # 4.1 Calculate ####
@@ -1320,32 +1915,46 @@ SIMPER_tidy %>%
 # 6.1.1 Figure 4a ####
 # This is the multidimensional community structure figure.
 # I am using relative abundance in all cases.
-Fig_4a <- ASV_summary %>%
-  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+require(ggdensity)
+Fig_4a <- ASV_sample %>%
+  mutate(
+    Treatment = if_else(Days == 0, "Baseline", Treatment) %>% fct()
+  ) %>%
   ggplot() +
-  geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
-             shape = 16) +
-  geom_polygon(data = . %>% group_by(Treatment) %>%
-                 slice(chull(MDS1_abund, MDS2_abund)),
-               aes(MDS1_abund, MDS2_abund,
-                   fill = Treatment, colour = Treatment),
-               alpha = 0.2, linejoin = "round") +
-  scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-  scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-  coord_cartesian(clip = "off") +
-  mytheme +
-  theme(axis.title = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        axis.line = element_blank(),
-        panel.border = element_rect(linejoin = "mitre"))
+    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
+               shape = 16) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(MDS1_abund, MDS2_abund)),
+                 aes(MDS1_abund, MDS2_abund,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linejoin = "round") +
+    geom_hdr(
+      data = nmds_prior_posterior %>%
+        pivot_wider(names_from = k, values_from = mu) %>%
+        filter(Treatment != "Prior") %>%
+        mutate(Treatment = Treatment %>% fct_drop() %>%
+                 fct_relevel("Baseline", "Dark 15°C")),
+      aes(MDS1, MDS2, fill = Treatment), 
+      probs = c(.5, .8, .9), n = 200
+    ) +
+    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
+                        guide = "none") +
+    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
+    coord_cartesian(clip = "off") +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          panel.border = element_rect(linejoin = "mitre"))
 Fig_4a
 
 # 6.1.2 Figure 4b ####
-Fig_4b <- ASV_summary %>%
+Fig_4b <- ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   left_join(
-    ASV_summary %>%
+    ASV_sample %>%
       mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
       summarise(MDS1_mean = mean(MDS1_abund),
                 MDS2_mean = mean(MDS2_abund),
@@ -1386,7 +1995,7 @@ Fig_4b <- ASV_summary %>%
 Fig_4b
 
 # 6.1.3 Figure 4c ####
-Fig_4c <- ASV_summary %>%
+Fig_4c <- ASV_sample %>%
   mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
   ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
     geom_point(aes(dbRDA1_abund, dbRDA2_abund*-1, colour = Treatment),
