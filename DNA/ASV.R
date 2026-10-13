@@ -1187,8 +1187,9 @@ tibble(
   # cor = 0 per row but there is still some correlation introduced
   # across rows which can be removed by reshuffling with sample()
   ggplot(aes(y[,1], sample(y[,2]))) +
-    geom_hdr(method = "mvnorm", probs = c(.999, .9, .5)) +
+    geom_hdr(method = "mvnorm", probs = c(.5, .8, .9), n = 200) +
     geom_point(data = nmds, aes(MDS1_std, MDS2_std)) +
+    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
     coord_cartesian(expand = F, clip = "off") +
     theme_minimal() +
     theme(panel.grid = element_blank())
@@ -1302,14 +1303,14 @@ nmds_c_samples$summary() %>%
             rhat_mean = mean(rhat, na.rm = TRUE),
             rhat_sd = sd(rhat, na.rm = TRUE))
 # NAs need to be removed because Omega[1,1] and Omega[2,2] have rhat = NA
-# 60% of rhat above 1.001. rhat = 1.00 ± 0.00293.
+# 36% of rhat above 1.001. rhat = 1.00 ± 0.000531.
 
 nmds_nc_samples$summary() %>%
   mutate(rhat_check = rhat > 1.001) %>%
   summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
             rhat_mean = mean(rhat, na.rm = TRUE),
             rhat_sd = sd(rhat, na.rm = TRUE))
-# No rhat above 1.001. rhat = 1.00 ± 0.000114.
+# No rhat above 1.001. rhat = 1.00 ± 0.0000966.
 # Non-centred model is the clear winner.
 
 # Chains
@@ -1375,15 +1376,15 @@ nmds_time_c_samples$summary() %>%
   summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
             rhat_mean = mean(rhat, na.rm = TRUE),
             rhat_sd = sd(rhat, na.rm = TRUE))
-# No rhat above 1.001. rhat = 1.00 ± 0.0000978.
+# No rhat above 1.001. rhat = 1.00 ± 0.0000829.
 
 nmds_time_nc_samples$summary() %>%
   mutate(rhat_check = rhat > 1.001) %>%
   summarise(rhat_1.001 = sum(rhat_check, na.rm = TRUE) / length(rhat),
             rhat_mean = mean(rhat, na.rm = TRUE),
             rhat_sd = sd(rhat, na.rm = TRUE))
-# No rhat above 1.001. rhat = 1.00 ± 0.0000943.
-# Models are similar.
+# No rhat above 1.001. rhat = 1.00 ± 0.000103.
+# Models are similar. Marginally less variable R-hat for centred model.
 
 # Chains
 nmds_time_c_chains <- nmds_time_c_samples$draws(format = "df") %>%
@@ -1510,7 +1511,7 @@ nmds_prior_posterior %>%
   ggsave(filename = "nmds_prior_posterior.pdf", 
          path = here("DNA", "Plots"),
          device = cairo_pdf, width = 50, height = 30, units = "cm")
-# The non-centred model is better. See for example k1, Baseline mu and mu_sigma.
+# The non-centred model is better. See for example MDS1 mu_sigma.
 # Choose non-centred model.
 
 # 3.7.2 Treatment x Day ####
@@ -1585,12 +1586,12 @@ nmds_time_prior_posterior %>%
   ggsave(filename = "nmds_time_prior_posterior.pdf", 
          path = here("DNA", "Plots"),
          device = cairo_pdf, width = 100, height = 60, units = "cm")
-# Models are very similar. Choose non-centred model.
+# Models are practically identical. Choose centred model.
 
 rm( # Clean up
   nmds_nc_prior_posterior, nmds_c_prior_posterior, nmds_prior_posterior,
   nmds_time_nc_prior_posterior, nmds_time_c_prior_posterior, nmds_time_prior_posterior,
-  nmds_c_model, nmds_c_samples, nmds_time_c_model, nmds_time_c_samples
+  nmds_c_model, nmds_c_samples, nmds_time_nc_model, nmds_time_nc_samples
 ) 
 gc()
 
@@ -1670,7 +1671,7 @@ nmds_prior_posterior %>%
 # Global (across treatments and days)
 nmds_time_prior_posterior_global <- nmds_time_prior %>% 
   prior_posterior_draws(
-    posterior_samples = nmds_time_nc_samples,
+    posterior_samples = nmds_time_c_samples,
     parameters = c("mu_mu[k]", "mu_sigma[k]"),
     format = "short"
   ) %>%
@@ -1704,7 +1705,7 @@ nmds_time_prior_posterior <- nmds %>%
   left_join( # Select only Treatment-Day combinations that exist in data
     nmds_time_prior %>% 
       prior_posterior_draws(
-        posterior_samples = nmds_time_nc_samples,
+        posterior_samples = nmds_time_c_samples,
         group = nmds %>% select(Treatment, Day),
         parameters = c("mu[Treatment,Day,k]"),
         format = "short"
@@ -1915,7 +1916,6 @@ SIMPER_tidy %>%
 # 6.1.1 Figure 4a ####
 # This is the multidimensional community structure figure.
 # I am using relative abundance in all cases.
-require(ggdensity)
 Fig_4a <- ASV_sample %>%
   mutate(
     Treatment = if_else(Days == 0, "Baseline", Treatment) %>% fct()
@@ -1982,8 +1982,18 @@ Fig_4b <- ASV_sample %>%
               arrow = arrow(length = unit(0.2, "cm"), 
                             type = "closed", angle = 20),
               lineend = "round", linejoin = "round") +
+    geom_hdr(
+      data = nmds_time_prior_posterior %>%
+        pivot_wider(names_from = k, values_from = mu) %>%
+        filter(Treatment != "Prior") %>%
+        mutate(Treatment = Treatment %>% fct_drop() %>%
+                 fct_relevel("Baseline", "Dark 15°C")),
+      aes(MDS1, MDS2, fill = Treatment, group = interaction(Treatment, Day)), 
+      probs = c(.5, .8, .9), n = 500
+    ) +
     scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
     scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
     coord_cartesian(clip = "off") +
     mytheme +
     theme(axis.title = element_blank(),
