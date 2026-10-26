@@ -19,7 +19,7 @@ prob_prediction <- prob_prior_posterior %>%
   spread_continuous(
     data = prob,
     predictor_name = "Day",
-    length = 600 # increase resolution because otherwise prior is not smooth
+    length = 600 # increase resolution because prior has a huge range
   ) %>%
   mutate(
     P_mu = plogis( -5 / mu * ( Day - mu ) ),
@@ -500,7 +500,7 @@ prob_dens_ani <- bind_rows(
 
 # 1.5 Animated figures ####
 require(gganimate) # also install gifski
-require(ggtext) # for Markdown syntax in gif
+require(ggtext) # for html syntax in gif
 
 # Top panel
 ( ggplot() +
@@ -616,7 +616,7 @@ deco_prediction <- deco_prior_posterior %>%
         Treatment = deco %$% levels(Treatment) %>% fct()
       ),
     predictor_name = "Day",
-    length = 200 # increase smoothness
+    length = 200 # double resolution
   ) %>%
   mutate(
     r_mu = exp(
@@ -1223,5 +1223,1228 @@ prob_dens_ani_short <- bind_rows(
   )
 
 # 3. NMDS ####
+# 3.1 Load data ####
+ASV_sample <- here("DNA", "RDS", "ASV_sample.rds") %>%
+  read_rds() %T>%
+  print()
 
+nmds <- ASV_sample %>%
+  select(Days, Treatment, MDS1_abund, MDS2_abund) %>%
+  rename(Day = Days, MDS1 = MDS1_abund, MDS2 = MDS2_abund) %>%
+  mutate(
+    Treatment = if_else(Day == 0, "Baseline", Treatment) %>% 
+      fct_relevel("Baseline", "Dark 15°C")
+  ) %T>%
+  print()
 
+nmds_prior_posterior <- here("DNA", "RDS", "nmds_prior_posterior.rds") %>%
+  read_rds() %>%
+  mutate(
+    Treatment = Treatment %>% fct_relevel("Prior", "Baseline", "Dark 15°C")
+  ) %T>%
+  print()
+
+nmds_time_prior_posterior <- here("DNA", "RDS", "nmds_time_prior_posterior.rds") %>%
+  read_rds() %>%
+  mutate(
+    Treatment = Treatment %>% fct_relevel("Prior", "Baseline", "Dark 15°C")
+  ) %T>%
+  print()
+
+# 3.2 Aesthetics ####
+# Data points
+nmds_points <- nmds %>%
+  mutate(
+    alpha = 0.5, # Baseline opacity
+    colour = case_when( # Colours
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    )
+  ) %>%
+  rename(x = MDS1, y = MDS2) %>% # Rename to x and y for consistency
+  select(Treatment, x, y, alpha, colour) %T>% # Select relevant variables
+  print()
+
+nmds_time_points <- nmds %>%
+  mutate(
+    alpha = 0.5, # Baseline opacity
+    colour = case_when( # Colours
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    )
+  ) %>%
+  rename(x = MDS1, y = MDS2) %T>%
+  print()
+
+# Densities
+nmds_dens_x <- nmds_prior_posterior %>%
+  filter(k == "MDS1") %>%
+  group_by(Treatment) %>% 
+  reframe(
+    x = c(-3, density(mu, n = 2^10, from = -3, to = 3, bw = 6 * 0.01)$x, 3),
+    y = c(0, density(mu, n = 2^10, from = -3, to = 3, bw = 6 * 0.01)$y, 0)
+  ) %>%
+  group_by(Treatment) %>%
+  mutate( y = y * .3 / ( sum(y) * ( x[3] - x[2] ) ) ) %>%
+  ungroup() %T>%
+  print()
+
+nmds_dens_y <- nmds_prior_posterior %>%
+  filter(k == "MDS2") %>%
+  group_by(Treatment) %>%
+  reframe( # Reversed x and y positions because this density is on the y axis
+    x = c(0, density(mu, n = 2^10, from = -2.5, to = 2.5, bw = 5 * 0.01)$y, 0),
+    y = c(-2.5, density(mu, n = 2^10, from = -2.5, to = 2.5, bw = 5 * 0.01)$x, 2.5)
+  ) %>%
+  group_by(Treatment) %>%
+  mutate( x = x * .3 / ( sum(x) * ( y[3] - y[2] ) ) ) %>%
+  ungroup() %T>%
+  print()
+
+nmds_dens_x %<>%
+  mutate(
+    alpha = 1, # Baseline opacity
+    fill = case_when(
+      Treatment == "Prior" ~ "#b5b8ba",
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    )
+  ) %T>%
+  print()
+
+nmds_dens_y %<>%
+  mutate(
+    alpha = 1, # Baseline opacity
+    fill = case_when(
+      Treatment == "Prior" ~ "#b5b8ba",
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    )
+  ) %T>%
+  print()
+
+# Bivariate densities
+require(ggdensity)
+require(densityarea) # this is a convenience package building on ggdensity
+nmds_ellipse <- nmds_prior_posterior %>%
+  pivot_wider(names_from = k, values_from = mu) %>%
+  group_by(Treatment) %>%
+  reframe(
+    density_polygons(
+      MDS1, MDS2, probs = c(.5, .8, .9), 
+      range_mult = 0, # no padding because these are posteriors
+      n = 800 # increase resolution
+    )
+  ) %T>%
+  print()
+
+nmds_ellipse %<>%
+  mutate(
+    fill = case_when(
+      Treatment == "Prior" ~ "#b5b8ba",
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    ),
+    alpha = case_when(
+      prob == .5 ~ .3,
+      prob == .8 ~ .4,
+      prob == .9 ~ .5
+    )
+  ) %>%
+  select(Treatment, level_id, MDS1, MDS2, fill, alpha) %>%
+  rename(x = MDS1, y = MDS2, id = level_id) %T>%
+  print()
+
+nmds_time_ellipse <- nmds_time_prior_posterior %>%
+  pivot_wider(names_from = k, values_from = mu) %>%
+  group_by(Day, Treatment) %>%
+  reframe(
+    density_polygons(
+      MDS1, MDS2, probs = c(.5, .8, .9), 
+      range_mult = 0, n = 800
+    )
+  ) %T>%
+  print()
+
+nmds_time_ellipse %<>%
+  mutate(
+    fill = case_when(
+      Treatment == "Prior" ~ "#b5b8ba",
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    ),
+    alpha = case_when(
+      prob == .5 ~ .3,
+      prob == .8 ~ .4,
+      prob == .9 ~ .5
+    ),
+    # Convert Day to number
+    Day = Day %>% as.character() %>% as.numeric()
+  ) %>%
+  select(Day, Treatment, level_id, MDS1, MDS2, fill, alpha) %>%
+  rename(x = MDS1, y = MDS2, id = level_id) %T>%
+  print()
+
+# Text
+nmds_text <- nmds_prior_posterior %>%
+  distinct(Treatment) %>%
+  mutate(
+    alpha = 1, # Baseline opacity
+    colour = case_when(
+      Treatment == "Prior" ~ "#b5b8ba",
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    ),
+    label = as.character(Treatment),
+    x = -2.9, y = 2.2
+  ) %T>%
+  print()
+
+nmds_time_text <- nmds_time_prior_posterior %>%
+  distinct(Day, Treatment) %>%
+  arrange(Day, Treatment) %>%
+  mutate(
+    alpha = 1,
+    colour = case_when(
+      Treatment == "Prior" ~ "#b5b8ba",
+      Treatment == "Baseline" ~ "#c3b300",
+      Treatment == "Dark 15°C" ~ "#2e4a5b",
+      Treatment == "Light 15°C" ~ "#6a98b4",
+      Treatment == "Light 20°C" ~ "#f5a54a",
+      Treatment == "Light 25°C" ~ "#d1750c"
+    ),
+    label = as.character(Treatment),
+    Day = Day %>% as.character() %>% as.numeric(),
+    x = -2.9, y = 2.2
+  ) %T>%
+  print()
+
+# 3.3 Static figures ####
+# Across days
+ggplot() +
+  geom_point(
+    data = nmds_points,
+    aes(x, y, colour = colour, alpha = alpha),
+    shape = 16, size = 2.35
+  ) +
+  geom_polygon(
+    data = nmds_ellipse,
+    aes(x, y, fill = fill, alpha = alpha, group = id)
+  ) +
+  geom_polygon(
+    data = nmds_dens_x,
+    aes(x, y - 2.5, fill = fill, alpha = alpha)
+  ) +
+  geom_polygon(
+    data = nmds_dens_y,
+    aes(x - 3, y, fill = fill, alpha = alpha)
+  ) +
+  geom_text(
+    data = nmds_text,
+    aes(x, y, label = label, colour = colour, alpha = alpha),
+    hjust = 0, vjust = 0, size.unit = "pt", 
+    size = 12, family = "Futura" 
+  ) +
+  scale_alpha_identity() +
+  scale_colour_identity() +
+  scale_fill_identity() +
+  facet_grid(~ Treatment, space = "free", scales = "free") +
+  coord_cartesian(xlim = c(-3, 3), ylim = c(-2.5, 2.5), expand = F, clip = "off") +
+  mytheme +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    panel.border = element_rect(linejoin = "mitre"),
+    plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm")
+  )
+
+# By day
+ggplot() +
+  geom_point(
+    data = nmds_time_points,
+    aes(x, y, colour = colour, alpha = alpha),
+    shape = 16, size = 2.35
+  ) +
+  geom_polygon(
+    data = nmds_time_ellipse,
+    aes(x, y, fill = fill, alpha = alpha, group = id)
+  ) +
+  geom_text(
+    data = nmds_time_text,
+    aes(x, y, label = label, colour = colour, alpha = alpha),
+    hjust = 0, vjust = 0, size.unit = "pt", 
+    size = 12, family = "Futura" 
+  ) +
+  scale_alpha_identity() +
+  scale_colour_identity() +
+  scale_fill_identity() +
+  facet_grid(Day ~ Treatment, space = "free", scales = "free") +
+  coord_cartesian(xlim = c(-3, 3), ylim = c(-2.5, 2.5), expand = F, clip = "off") +
+  mytheme +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    panel.border = element_rect(linejoin = "mitre"),
+    plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm")
+  )
+
+# 3.4 Animation ####
+# 3.4.1 Across days ####
+# Tween points
+nmds_points_ani <- bind_rows( 
+  tween_state(
+    nmds_points %>% filter(Treatment == "Prior"), 
+    nmds_points %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50),
+  tween_state(
+    nmds_points %>% filter(Treatment == "Baseline"), 
+    nmds_points %>% filter(Treatment == "Dark 15°C"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1 * 150),
+  tween_state(
+    nmds_points %>% filter(Treatment == "Dark 15°C"), 
+    nmds_points %>% filter(Treatment == "Light 15°C"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 2 * 150),
+  tween_state(
+    nmds_points %>% filter(Treatment == "Light 15°C"), 
+    nmds_points %>% filter(Treatment == "Light 20°C"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 3 * 150),
+  tween_state(
+    nmds_points %>% filter(Treatment == "Light 20°C"), 
+    nmds_points %>% filter(Treatment == "Light 25°C"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 4 * 150),
+  tween_state( 
+    # Because prior is sandwiched here, it needs special consideration 
+    nmds_points %>% filter(Treatment == "Light 25°C"),
+    # Here I am creating a transparent placeholder point rather than 
+    # the empty tibble given by setting Treatment == "Prior".
+    nmds_points %>% 
+      filter(Treatment == "Light 25°C") %>%
+      first() %>%
+      mutate(alpha = 0),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 5 * 150),
+  tween_state(
+    nmds_points %>% filter(Treatment == "Prior"), 
+    nmds_points %>% filter(Treatment != "Prior"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 6 * 150),
+  tween_state(
+    nmds_points %>% filter(Treatment != "Prior"), 
+    nmds_points %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 7 * 150)
+) %T>%
+  print()
+
+# Tween densities
+nmds_dens_x_ani <- bind_rows(
+  tween_polygon(
+    nmds_dens_x %>% filter(Treatment == "Prior"),
+    nmds_dens_x %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100,
+  ) %>%
+    keep_state(nframes = 50),
+  tween_polygon(
+    nmds_dens_x %>% filter(Treatment == "Baseline"),
+    nmds_dens_x %>% filter(Treatment == "Dark 15°C"),
+    ease = "cubic-in-out", nframes = 100,
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1 * 150),
+  tween_polygon(
+    nmds_dens_x %>% filter(Treatment == "Dark 15°C"),
+    nmds_dens_x %>% filter(Treatment == "Light 15°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 2 * 150),
+  tween_polygon(
+    nmds_dens_x %>% filter(Treatment == "Light 15°C"),
+    nmds_dens_x %>% filter(Treatment == "Light 20°C"),
+    ease = "cubic-in-out", nframes = 100,
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 3 * 150),
+  tween_polygon(
+    nmds_dens_x %>% filter(Treatment == "Light 20°C"),
+    nmds_dens_x %>% filter(Treatment == "Light 25°C"),
+    ease = "cubic-in-out", nframes = 100,
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 4 * 150),
+  tween_polygon(
+    nmds_dens_x %>% filter(Treatment == "Light 25°C"),
+    nmds_dens_x %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100,
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 5 * 150),
+  tween_polygon(
+    nmds_dens_x %>% 
+      filter(Treatment == "Prior") %>%
+      expand_grid(id = 1:5),
+    nmds_dens_x %>% 
+      filter(Treatment != "Prior") %>%
+      droplevels() %>%
+      mutate(
+        id = as.integer(Treatment),
+        alpha = .6
+      ),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 6 * 150),
+  tween_polygon(
+    nmds_dens_x %>% 
+      filter(Treatment != "Prior") %>%
+      droplevels() %>%
+      mutate(
+        id = as.integer(Treatment),
+        alpha = .6
+      ),
+    nmds_dens_x %>% 
+      filter(Treatment == "Prior") %>%
+      expand_grid(id = 1:5),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 7 * 150)
+) %T>%
+  print()
+
+nmds_dens_y_ani <- bind_rows(
+  tween_polygon(
+    nmds_dens_y %>% filter(Treatment == "Prior"),
+    nmds_dens_y %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50),
+  tween_polygon(
+    nmds_dens_y %>% filter(Treatment == "Baseline"),
+    nmds_dens_y %>% filter(Treatment == "Dark 15°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1 * 150),
+  tween_polygon(
+    nmds_dens_y %>% filter(Treatment == "Dark 15°C"),
+    nmds_dens_y %>% filter(Treatment == "Light 15°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 2 * 150),
+  tween_polygon(
+    nmds_dens_y %>% filter(Treatment == "Light 15°C"),
+    nmds_dens_y %>% filter(Treatment == "Light 20°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 3 * 150),
+  tween_polygon(
+    nmds_dens_y %>% filter(Treatment == "Light 20°C"),
+    nmds_dens_y %>% filter(Treatment == "Light 25°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 4 * 150),
+  tween_polygon(
+    nmds_dens_y %>% filter(Treatment == "Light 25°C"),
+    nmds_dens_y %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 5 * 150),
+  tween_polygon(
+    nmds_dens_y %>% 
+      filter(Treatment == "Prior") %>%
+      expand_grid(id = 1:5),
+    nmds_dens_y %>% 
+      filter(Treatment != "Prior") %>%
+      droplevels() %>%
+      mutate(
+        id = as.integer(Treatment),
+        alpha = .6
+      ),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 6 * 150),
+  tween_polygon(
+    nmds_dens_y %>% 
+      filter(Treatment != "Prior") %>%
+      droplevels() %>%
+      mutate(
+        id = as.integer(Treatment),
+        alpha = .6
+      ),
+    nmds_dens_y %>% 
+      filter(Treatment == "Prior") %>%
+      expand_grid(id = 1:5),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 7 * 150)
+) %T>%
+  print()
+
+# Tween bivariate densities
+nmds_ellipse_ani <- bind_rows(
+  tween_polygon(
+    nmds_ellipse %>% filter(Treatment == "Prior"),
+    nmds_ellipse %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50),
+  tween_polygon(
+    nmds_ellipse %>% filter(Treatment == "Baseline"),
+    nmds_ellipse %>% filter(Treatment == "Dark 15°C"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1 * 150),
+  tween_polygon(
+    nmds_ellipse %>% filter(Treatment == "Dark 15°C"),
+    nmds_ellipse %>% filter(Treatment == "Light 15°C"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 2 * 150),
+  tween_polygon(
+    nmds_ellipse %>% filter(Treatment == "Light 15°C"),
+    nmds_ellipse %>% filter(Treatment == "Light 20°C"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 3 * 150),
+  tween_polygon(
+    nmds_ellipse %>% filter(Treatment == "Light 20°C"),
+    nmds_ellipse %>% filter(Treatment == "Light 25°C"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 4 * 150),
+  tween_polygon(
+    nmds_ellipse %>% filter(Treatment == "Light 25°C"),
+    nmds_ellipse %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 5 * 150),
+  tween_polygon(
+    nmds_ellipse %>% 
+      filter(Treatment == "Prior") %>%
+      expand_grid(rep = 1:5) %>%
+      mutate(
+        id = interaction(id, rep) %>% 
+          as.integer(), # Reduce alpha according to overlap
+        alpha = 1 - (1 - alpha)^(1/max(rep))
+      ) %>%
+      select(-rep),
+    nmds_ellipse %>% 
+      filter(Treatment != "Prior") %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 6 * 150),
+  tween_polygon(
+    nmds_ellipse %>% 
+      filter(Treatment != "Prior") %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    nmds_ellipse %>% 
+      filter(Treatment == "Prior") %>%
+      expand_grid(rep = 1:5) %>%
+      mutate(
+        id = interaction(id, rep) %>% 
+          as.integer(),
+        alpha = 1 - (1 - alpha)^(1/max(rep))
+      ) %>%
+      select(-rep),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 7 * 150)
+) %T>%
+  print()
+
+# Tween text
+nmds_text_ani <- bind_rows( 
+  tween_state(
+    nmds_text %>% filter(Treatment == "Prior"), 
+    nmds_text %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50),
+  tween_state(
+    nmds_text %>% filter(Treatment == "Baseline"), 
+    nmds_text %>% filter(Treatment == "Dark 15°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1 * 150),
+  tween_state(
+    nmds_text %>% filter(Treatment == "Dark 15°C"), 
+    nmds_text %>% filter(Treatment == "Light 15°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 2 * 150),
+  tween_state(
+    nmds_text %>% filter(Treatment == "Light 15°C"), 
+    nmds_text %>% filter(Treatment == "Light 20°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 3 * 150),
+  tween_state(
+    nmds_text %>% filter(Treatment == "Light 20°C"), 
+    nmds_text %>% filter(Treatment == "Light 25°C"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 4 * 150),
+  tween_state(
+    nmds_text %>% filter(Treatment == "Light 25°C"), 
+    nmds_text %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 5 * 150),
+  tween_state(
+    nmds_text %>% filter(Treatment == "Prior"), 
+    nmds_text %>% 
+      filter(Treatment != "Prior") %>%
+      mutate(
+        x = case_when(
+          Treatment == "Baseline" ~ -2.9,
+          Treatment == "Dark 15°C" ~ -2.9,
+          Treatment == "Light 15°C" ~ -1.41,
+          Treatment == "Light 20°C" ~ 0.08,
+          Treatment == "Light 25°C" ~ 1.57
+        ),
+        y = if_else(Treatment == "Baseline", 2.2, 1.9)
+      ),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit 
+    # specify enter because one label is turning into five
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 6 * 150),
+  tween_state(
+    nmds_text %>% 
+      filter(Treatment != "Prior") %>%
+      mutate(
+        x = case_when(
+          Treatment == "Baseline" ~ -2.9,
+          Treatment == "Dark 15°C" ~ -2.9,
+          Treatment == "Light 15°C" ~ -1.41,
+          Treatment == "Light 20°C" ~ 0.08,
+          Treatment == "Light 25°C" ~ 1.57
+        ),
+        y = if_else(Treatment == "Baseline", 2.2, 1.9)
+      ), 
+    nmds_text %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+    # specify exit because five labels are turning into one
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 7 * 150)
+) %T>%
+  print()
+
+# 3.4.2 By day ####
+# Tween points
+nmds_time_points_ani <- bind_rows( 
+  tween_state( # These treatments are only represented at day 0
+    nmds_time_points %>% filter(Treatment == "Prior"),
+    nmds_time_points %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50),
+  tween_state(
+    nmds_time_points %>% filter(Treatment == "Baseline"), 
+    nmds_time_points %>% filter(Day == 6), # 6 days is the minimum difference
+    # linear ease signifies time transition
+    ease = "linear", nframes = 60, # 10 frames per day * 6 days = 60 frames
+    enter = enter, exit = exit
+    # all future enter/exit should also occur across 60 frames
+  ) %>%
+    mutate(.frame = .frame + 150),
+  tween_state(
+    nmds_time_points %>% filter(Day == 6), 
+    nmds_time_points %>% filter(Day == 13),
+    ease = "linear", nframes = 70,
+    enter = enter, exit = exit
+  ) %>%
+    mutate(
+      # adjust alpha fade speed to 60 frames
+      alpha = if_else(
+        .phase %in% c("enter", "exit"),
+        deframe(
+          tibble(
+            seq(0, 0.5, length.out = 70) %>% round(7), # original fade
+            c(rep(0, 70-60), seq(0, 0.5, length.out = 60)) # new fade
+          ) # round because tweenr sometimes rounds alpha
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 210
+    ),
+  tween_state(
+    nmds_time_points %>% filter(Day == 13), 
+    nmds_time_points %>% filter(Day == 27),
+    ease = "linear", nframes = 140,
+    enter = enter, exit = exit
+  ) %>%
+    mutate(
+      alpha = if_else(
+        .phase %in% c("enter", "exit"),
+        deframe(
+          tibble(
+            seq(0, 0.5, length.out = 140) %>% round(7),
+            c(rep(0, 140-60), seq(0, 0.5, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 280
+    ),
+  tween_state(
+    nmds_time_points %>% filter(Day == 27), 
+    nmds_time_points %>% filter(Day == 37),
+    ease = "linear", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    mutate(
+      alpha = if_else(
+        .phase %in% c("enter", "exit"),
+        deframe(
+          tibble(
+            seq(0, 0.5, length.out = 100) %>% round(7),
+            c(rep(0, 100-60), seq(0, 0.5, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 420
+    ),
+  tween_state( 
+    nmds_time_points %>% filter(Day == 37),
+    nmds_time_points %>% filter(Day == 82),
+    ease = "linear", nframes = 450,
+    enter = enter, exit = exit
+  ) %>%
+    mutate(
+      alpha = if_else(
+        .phase %in% c("enter", "exit"),
+        deframe(
+          tibble(
+            seq(0, 0.5, length.out = 450) %>% round(7),
+            c(rep(0, 450-60), seq(0, 0.5, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 520
+    ),
+  tween_state(
+    nmds_time_points %>% filter(Day == 82), 
+    nmds_time_points %>% filter(Day == 119),
+    ease = "linear", nframes = 370,
+    enter = enter, exit = exit
+  ) %>%
+    mutate(
+      alpha = if_else(
+        .phase %in% c("enter", "exit"),
+        deframe(
+          tibble(
+            seq(0, 0.5, length.out = 370) %>% round(7),
+            c(rep(0, 370-60), seq(0, 0.5, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 970
+    ),
+  tween_state(
+    nmds_time_points %>% filter(Day == 119), 
+    nmds_time_points %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100,
+    enter = enter, exit = exit
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1340)
+) %T>%
+  print()
+# 1490 frames in total
+
+nmds_time_points_ani %>% 
+  filter(.phase == "transition") %>% 
+  ggplot(aes(.frame, Day)) + 
+    geom_abline(slope = .1) +
+    geom_point() +
+    mytheme
+# Linear ease maps frames directly onto days
+
+# Tween bivariate densities
+nmds_time_ellipse_ani <- bind_rows(
+  tween_polygon(
+    nmds_time_ellipse %>% filter(Treatment == "Prior"),
+    nmds_time_ellipse %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50),
+  tween_polygon(
+    nmds_time_ellipse %>% 
+      filter(Treatment == "Baseline") %>%
+      expand_grid(rep = 1:5) %>%
+      mutate(
+        id = interaction(id, rep) %>% 
+          as.integer(), # Reduce alpha according to overlap
+        alpha = 1 - (1 - alpha)^(1/max(rep))
+      ) %>%
+      select(-rep),
+    nmds_time_ellipse %>% 
+      filter(Day == 6) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ), # linear ease signifies time transition
+    ease = "linear", nframes = 60, id = id # 10 frames per day
+  ) %>%
+    mutate(.frame = .frame + 150),
+  tween_polygon(
+    nmds_time_ellipse %>% 
+      filter(Day == 6) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    nmds_time_ellipse %>% 
+      filter(Day == 13) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    ease = "linear", nframes = 70, id = id
+  ) %>%
+    mutate(.frame = .frame + 210),
+  tween_polygon(
+    nmds_time_ellipse %>% 
+      filter(Day == 13) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    nmds_time_ellipse %>% 
+      filter(Day == 27) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    ease = "linear", nframes = 140, id = id
+  ) %>%
+    mutate(.frame = .frame + 280),
+  tween_polygon(
+    nmds_time_ellipse %>% 
+      filter(Day == 27) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    nmds_time_ellipse %>% 
+      filter(Day == 37) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    ease = "linear", nframes = 100, id = id,
+    exit = exit # Light 25°C exits here
+  ) %>%
+    mutate(
+      # increase alpha fadeout speed to 60 frames
+      alpha = case_when(
+        # baseline alpha depends on id
+        id %in% c(3, 6, 9, 12) ~ deframe(
+          tibble(
+            seq(0, .5, length.out = 100) %>% round(7),
+            c(rep(0, 100-60), seq(0, .5, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        id %in% c(2, 5, 8, 11) ~ deframe(
+          tibble(
+            seq(0, .4, length.out = 100) %>% round(7),
+            c(rep(0, 100-60), seq(0, .4, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        id %in% c(1, 4, 7, 10) ~ deframe(
+          tibble(
+            seq(0, .3, length.out = 100) %>% round(7),
+            c(rep(0, 100-60), seq(0, .3, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()]
+      ),
+      .frame = .frame + 420
+    ),
+  tween_polygon(
+    nmds_time_ellipse %>% 
+      filter(Day == 37) %>%
+      droplevels() %>%
+      mutate(
+        id = interaction(id, Treatment) %>% 
+          as.integer()
+      ),
+    nmds_time_ellipse %>% 
+      filter(Day == 82) %>% # only Light 15°C is left
+      mutate(id = id + 3L), # make id consistent
+    ease = "linear", nframes = 450, id = id,
+    exit = exit
+  ) %>%
+    mutate(
+      alpha = case_when(
+        id %in% c(3, 6, 9, 12) ~ deframe(
+          tibble(
+            seq(0, .5, length.out = 450) %>% round(7),
+            c(rep(0, 450-60), seq(0, .5, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        id %in% c(2, 5, 8, 11) ~ deframe(
+          tibble(
+            seq(0, .4, length.out = 450) %>% round(7),
+            c(rep(0, 450-60), seq(0, .4, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        id %in% c(1, 4, 7, 10) ~ deframe(
+          tibble(
+            seq(0, .3, length.out = 450) %>% round(7),
+            c(rep(0, 450-60), seq(0, .3, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()]
+      ),
+      .frame = .frame + 520
+    ),
+  tween_polygon(
+    nmds_time_ellipse %>% filter(Day == 82),
+    nmds_time_ellipse %>% filter(Day == 119),
+    ease = "linear", nframes = 370, id = id
+  ) %>%
+    mutate(.frame = .frame + 970),
+  tween_polygon(
+    nmds_time_ellipse %>% filter(Day == 119),
+    nmds_time_ellipse %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100, id = id
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1340)
+) %T>%
+  print()
+# 1490 frames in total
+
+# Tween text
+nmds_time_text_ani <- bind_rows( 
+  tween_state(
+    nmds_time_text %>% filter(Treatment == "Prior"), 
+    nmds_time_text %>% filter(Treatment == "Baseline"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50),
+  tween_state(
+    nmds_time_text %>% filter(Treatment == "Baseline"), 
+    nmds_time_text %>% 
+      filter(Day == 6) %>%
+      mutate(
+        x = case_when(
+          Treatment == "Dark 15°C" ~ -2.9,
+          Treatment == "Light 15°C" ~ -1.41,
+          Treatment == "Light 20°C" ~ 0.08,
+          Treatment == "Light 25°C" ~ 1.57
+        )
+      ),
+    ease = "linear", nframes = 60, enter = enter
+    # specify enter because one label is turning into four
+  ) %>%
+    keep_state(nframes = 210) %>% # Keep until day 27
+    mutate(.frame = .frame + 150),
+  tween_state(
+    nmds_time_text %>% 
+      filter(Day == 27) %>%
+      mutate(
+        x = case_when(
+          Treatment == "Dark 15°C" ~ -2.9,
+          Treatment == "Light 15°C" ~ -1.41,
+          Treatment == "Light 20°C" ~ 0.08,
+          Treatment == "Light 25°C" ~ 1.57
+        )
+      ), 
+    nmds_time_text %>% 
+      filter(Day == 37) %>%
+      mutate(
+        x = case_when(
+          Treatment == "Dark 15°C" ~ -2.9,
+          Treatment == "Light 15°C" ~ -1.41,
+          Treatment == "Light 20°C" ~ 0.08,
+          Treatment == "Light 25°C" ~ 1.57
+        )
+      ),
+    ease = "linear", nframes = 100, exit = exit
+    # specify exit because Light 25°C leaves
+  ) %>%
+    mutate(
+      alpha = if_else(
+        .phase == "exit",
+        deframe(
+          tibble( # baseline alpha = 1
+            seq(0, 1, length.out = 100) %>% round(7),
+            c(rep(0, 100-60), seq(0, 1, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 420
+    ),
+  tween_state(
+    nmds_time_text %>% 
+      filter(Day == 37) %>%
+      # Re-arrange so rownumbers/ids are paired correctly
+      arrange(Treatment %>% fct_relevel("Light 15°C")) %>%
+      mutate(
+        x = case_when(
+          Treatment == "Dark 15°C" ~ -2.9,
+          Treatment == "Light 15°C" ~ -1.41,
+          Treatment == "Light 20°C" ~ 0.08,
+          Treatment == "Light 25°C" ~ 1.57
+        )
+      ), 
+    nmds_time_text %>% 
+      filter(Day == 82) %>% # only Light 15°C is left
+      mutate(x = -1.41),
+    ease = "linear", nframes = 450, exit = exit
+    # specify exit because only Light 15°C is left at the end
+  ) %>%
+    keep_state(nframes = 370) %>% # keep Light 15°C until day 119
+    mutate(
+      alpha = if_else(
+        .phase == "exit",
+        deframe(
+          tibble(
+            seq(0, 1, length.out = 450) %>% round(7),
+            c(rep(0, 450-60), seq(0, 1, length.out = 60))
+          )
+        )[alpha %>% round(7) %>% as.character()],
+        alpha
+      ),
+      .frame = .frame + 520
+    ),
+  tween_state(
+    nmds_time_text %>% 
+      filter(Day == 119) %>%
+      mutate(x = -1.41), 
+    nmds_time_text %>% filter(Treatment == "Prior"),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1340)
+) %T>%
+  print()
+# 1490 frames in total
+
+# Simplify for Day label
+nmds_time_day <- nmds_time_text %>% 
+  mutate(y = 1.9) %>%
+  distinct(Day, x, y)
+
+nmds_time_day_ani <- bind_rows(
+  keep_state(
+    nmds_time_day %>% filter(Day == 0),
+    nframes = 150
+  ),
+  tween_state(
+    nmds_time_day %>% filter(Day == 0), 
+    nmds_time_day %>% filter(Day == 119),
+    ease = "linear", nframes = 1190
+  ) %>%
+    mutate(.frame = .frame + 150),
+  tween_state(
+    nmds_time_day %>% filter(Day == 119), 
+    nmds_time_day %>% filter(Day == 0),
+    ease = "cubic-in-out", nframes = 100
+  ) %>%
+    keep_state(nframes = 50) %>%
+    mutate(.frame = .frame + 1340)
+) %T>%
+  print()
+# 1490 frames in total
+
+# 2.5 Animated figures ####
+# Across days
+( ggplot() +
+    geom_point(
+      data = nmds_points_ani,
+      aes(x, y, colour = colour, alpha = alpha),
+      shape = 16, size = 2.35
+    ) +
+    geom_polygon(
+      data = nmds_ellipse_ani,
+      aes(x, y, fill = fill, alpha = alpha, group = id)
+    ) +
+    geom_polygon(
+      data = nmds_dens_x_ani,
+      aes(x, y - 2.5, fill = fill, alpha = alpha)
+    ) +
+    geom_polygon(
+      data = nmds_dens_y_ani,
+      aes(x - 3, y, fill = fill, alpha = alpha)
+    ) +
+    geom_text(
+      data = nmds_text_ani,
+      aes(x, y, label = label, colour = colour, alpha = alpha),
+      hjust = 0, vjust = 0, size.unit = "pt",
+      size = 12, family = "Futura"
+    ) +
+    scale_alpha_identity() +
+    scale_colour_identity() +
+    scale_fill_identity() +
+    coord_cartesian(
+      xlim = c(-3, 3), ylim = c(-2.5, 2.5), 
+      expand = F, clip = "off"
+    ) +
+    transition_manual(.frame) +
+    mytheme +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.line = element_blank(),
+      panel.border = element_rect(linejoin = "mitre"),
+      plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm")
+    ) ) %>%
+  animate(
+    fps = 25, duration = 8 * 3, detail = 2,
+    width = 10, height = 10, units = "cm", res = 300,
+    renderer = gifski_renderer(), device = "ragg_png"
+  ) %>%
+  anim_save(
+    filename = "nmds.gif", 
+    path = here("Figures", "Animation")
+  )
+
+# By day
+require(glue)
+( ggplot() +
+    geom_point(
+      data = nmds_time_points_ani,
+      aes(x, y, colour = colour, alpha = alpha),
+      shape = 16, size = 2.35
+    ) +
+    geom_polygon(
+      data = nmds_time_ellipse_ani,
+      aes(x, y, fill = fill, alpha = alpha, group = id)
+    ) +
+    geom_text(
+      data = nmds_time_text_ani,
+      aes(x, y, label = label, colour = colour, alpha = alpha),
+      hjust = 0, vjust = 0, size.unit = "pt",
+      size = 12, family = "Futura"
+    ) +
+    geom_text(
+      data = nmds_time_day_ani, # consistently round half days up 
+      aes(x, y, label = glue("Day {floor(Day + .5)}")),
+      hjust = 0, vjust = 0, size.unit = "pt",
+      size = 12, family = "Futura"
+    ) +
+    scale_alpha_identity() +
+    scale_colour_identity() +
+    scale_fill_identity() +
+    coord_cartesian(
+      xlim = c(-3, 3), ylim = c(-2.5, 2.5), 
+      expand = F, clip = "off"
+    ) +
+    transition_manual(.frame) +
+    mytheme +
+    theme(
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.line = element_blank(),
+      panel.border = element_rect(linejoin = "mitre"),
+      plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm")
+    ) ) %>%
+  animate( # 150 frames per "transition", so 1490/150 "transitions"
+    fps = 25, duration = 1490 / 150 * 3, detail = 2,
+    width = 10, height = 10, units = "cm", res = 300,
+    renderer = gifski_renderer(), device = "ragg_png"
+  ) %>%
+  anim_save(
+    filename = "nmds_time.gif", 
+    path = here("Figures", "Animation")
+  )
