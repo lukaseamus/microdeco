@@ -650,6 +650,7 @@ deco_prediction <- deco_prior_posterior %>%
 # 2.2 Aesthetics ####
 # Data points
 deco_points <- deco %>%
+  arrange(Treatment, Day, Ratio_mean) %>% # Sort so points don't move far
   mutate(
     alpha = 0.5, # Baseline transparency
     colour = case_when( # Colours
@@ -665,6 +666,7 @@ deco_points <- deco %>%
 
 # Error bars
 deco_bars <- deco %>%
+  arrange(Treatment, Day, Ratio_mean) %>% # Sort so bars don't move far
   mutate(Replicate = row_number()) %>%
   select(Treatment, Replicate, Day, Ratio_lower, Ratio_upper) %>%
   pivot_longer(cols = starts_with("Ratio"), values_to = "y") %>%
@@ -1165,14 +1167,14 @@ prob_dens_ani_short <- bind_rows(
     scale_y_continuous(labels = scales::label_number(accuracy = 0.1)) +
     labs(
       x = "Half-life (days)",
-      y = expression("Detrital mass ("*italic("m")*"/"*italic("m")[0]*")")
+      y = "Detrital mass (*m*/*m*<sub><span style='font-size:8.4pt'>0</span></sub>)"
     ) +
     coord_cartesian(xlim = c(0, 120), ylim = c(0, 0.25), expand = F, clip = "off") +
     transition_manual(.frame) +
     mytheme +
     # These will be hidden (transparent) but ensure identical spacing
     theme(
-      axis.title.y = element_text(colour = "transparent"),
+      axis.title.y = element_markdown(colour = "transparent"),
       axis.text.y = element_text(colour = "transparent"),
       axis.ticks.y = element_line(colour = "transparent"),
       axis.line.y = element_line(colour = "transparent")
@@ -1201,13 +1203,13 @@ prob_dens_ani_short <- bind_rows(
     scale_y_continuous(labels = scales::label_number(accuracy = 0.1)) +
     labs(
       x = "Half-life (days)",
-      y = expression("Detrital mass ("*italic("m")*"/"*italic("m")[0]*")")
+      y = "Detrital mass (*m*/*m*<sub><span style='font-size:8.4pt'>0</span></sub>)"
     ) +
     coord_cartesian(xlim = c(0, 120), ylim = c(0, 0.25), expand = F, clip = "off") +
     transition_manual(.frame) +
     mytheme +
     theme(
-      axis.title.y = element_text(colour = "transparent"),
+      axis.title.y = element_markdown(colour = "transparent"),
       axis.text.y = element_text(colour = "transparent"),
       axis.ticks.y = element_line(colour = "transparent"),
       axis.line.y = element_line(colour = "transparent")
