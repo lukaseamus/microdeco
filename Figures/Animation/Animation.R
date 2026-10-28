@@ -51,6 +51,7 @@ prob_prediction <- prob_prior_posterior %>%
 # 1.2 Aesthetics ####
 # Data points
 prob_points <- prob %>%
+  arrange(Treatment, Day, GP_P) %>% # Sort so points don't have far to move
   mutate(
     alpha = 0.5, # Baseline transparency
     colour = case_when( # Colours
