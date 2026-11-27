@@ -1149,9 +1149,6 @@ ASV_sample %>%
           axis.ticks = element_blank(),
           axis.line = element_blank())
 
-ASV_sample %>%
-  write_rds(here("DNA", "RDS", "ASV_sample.rds"))
-
 # 3.4 Prior simulation ####
 # Ordination space is not bounded so a multivariate normal distribution
 # will suit as the likelihood. For one model I want to stratify only by 
@@ -1811,6 +1808,10 @@ ASV_sample %<>%
   ) %T>%
   print()
 
+# Save
+ASV_sample %>%
+  write_rds(here("DNA", "RDS", "ASV_sample.rds"))
+
 # 4.4 Visualise ####
 # Reads
 require(geomtextpath)
@@ -1913,149 +1914,8 @@ SIMPER_tidy %>%
 
 # 6. Figures ####
 # 6.1 Figure 4 ####
-# 6.1.1 Figure 4a ####
-# This is the multidimensional community structure figure.
-# I am using relative abundance in all cases.
-Fig_4a <- ASV_sample %>%
-  mutate(
-    Treatment = if_else(Days == 0, "Baseline", Treatment) %>% fct()
-  ) %>%
-  ggplot() +
-    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
-               shape = 16) +
-    geom_polygon(data = . %>% group_by(Treatment) %>%
-                   slice(chull(MDS1_abund, MDS2_abund)),
-                 aes(MDS1_abund, MDS2_abund,
-                     fill = Treatment, colour = Treatment),
-                 alpha = 0.2, linejoin = "round") +
-    geom_hdr(
-      data = nmds_prior_posterior %>%
-        pivot_wider(names_from = k, values_from = mu) %>%
-        filter(Treatment != "Prior") %>%
-        mutate(Treatment = Treatment %>% fct_drop() %>%
-                 fct_relevel("Baseline", "Dark 15°C")),
-      aes(MDS1, MDS2, fill = Treatment), 
-      probs = c(.5, .8, .9), n = 200
-    ) +
-    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
-                        guide = "none") +
-    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
-    coord_cartesian(clip = "off") +
-    mytheme +
-    theme(axis.title = element_blank(),
-          axis.text = element_blank(),
-          axis.ticks = element_blank(),
-          axis.line = element_blank(),
-          panel.border = element_rect(linejoin = "mitre"))
-Fig_4a
-
-# 6.1.2 Figure 4b ####
-Fig_4b <- ASV_sample %>%
-  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
-  left_join(
-    ASV_sample %>%
-      mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
-      summarise(MDS1_mean = mean(MDS1_abund),
-                MDS2_mean = mean(MDS2_abund),
-                .by = c(Treatment, Days))
-  ) %>%
-  ggplot() +
-    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
-               shape = 16, alpha = 0.2) +
-    geom_segment(aes(x = MDS1_abund, y = MDS2_abund, 
-                     xend = MDS1_mean, yend = MDS2_mean,
-                     colour = Treatment), alpha = 0.2,
-                 lineend = "round") +
-    geom_path(data = . %>% distinct(Days, Treatment, MDS1_mean, MDS2_mean) %>% 
-                mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
-                mutate(
-                  Treatment = case_when(
-                    row_number() == 1 ~ "Light 15°C",
-                    row_number() == 2 ~ "Dark 15°C",
-                    row_number() == 3 ~ "Light 20°C",
-                    row_number() == 4 ~ "Light 25°C",
-                    TRUE ~ Treatment
-                  )
-                ),
-              aes(MDS1_mean, MDS2_mean, colour = Treatment),
-              arrow = arrow(length = unit(0.2, "cm"), 
-                            type = "closed", angle = 20),
-              lineend = "round", linejoin = "round") +
-    geom_hdr(
-      data = nmds_time_prior_posterior %>%
-        pivot_wider(names_from = k, values_from = mu) %>%
-        filter(Treatment != "Prior") %>%
-        mutate(Treatment = Treatment %>% fct_drop() %>%
-                 fct_relevel("Baseline", "Dark 15°C")),
-      aes(MDS1, MDS2, fill = Treatment, group = interaction(Treatment, Day)), 
-      probs = c(.5, .8, .9), n = 500
-    ) +
-    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
-    coord_cartesian(clip = "off") +
-    mytheme +
-    theme(axis.title = element_blank(),
-          axis.text = element_blank(),
-          axis.ticks = element_blank(),
-          axis.line = element_blank(),
-          panel.border = element_rect(linejoin = "mitre"))
-
-Fig_4b
-
-# 6.1.3 Figure 4c ####
-Fig_4c <- ASV_sample %>%
-  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
-  ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
-    geom_point(aes(dbRDA1_abund, dbRDA2_abund*-1, colour = Treatment),
-               shape = 16) +
-    geom_polygon(data = . %>% group_by(Treatment) %>%
-                   slice(chull(dbRDA1_abund, dbRDA2_abund)),
-                 aes(dbRDA1_abund, dbRDA2_abund*-1,
-                     fill = Treatment, colour = Treatment),
-                 alpha = 0.2, linejoin = "round") +
-    # geom_textsegment(data = effects %>% filter(Response == "Abundance"),
-    #           aes(x = 1, y = 2, xend = dbRDA1+1, yend = dbRDA2*-1+2,
-    #               label = label), hjust = 1, family = "Futura", size = 3.5, # ~10 pt
-    #           arrow = arrow(length = unit(0.3, "cm"),
-    #                         type = "closed", angle = 20)) +
-    geom_segment(data = effects %>% filter(Response == "Abundance"),
-                 aes(x = 0.9, y = 1.55, xend = dbRDA1+0.9, yend = dbRDA2*-1+1.55),
-                 arrow = arrow(length = unit(0.2, "cm"),
-                               type = "closed", angle = 20),
-                 lineend = "round", linejoin = "round") +
-    geom_text(data = effects %>% filter(Response == "Abundance"),
-              aes(dbRDA1+0.9, dbRDA2*-1+1.55, label = label),
-              hjust = c(0.4, 0.5, 0), vjust = c(1.3, -0.3, -0.3),
-              family = "Futura", size.unit = "pt", size = 10) +
-    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
-    coord_cartesian(clip = "off") +
-    mytheme +
-    theme(axis.title = element_blank(),
-          axis.text = element_blank(),
-          axis.ticks = element_blank(),
-          axis.line = element_blank(),
-          panel.border = element_rect(linejoin = "mitre"))
-Fig_4c
-
-# 6.1.4 Combined panels ####
-require(patchwork) # Fig_4b has different colour guides, which I remove
-Fig_4 <- ( Fig_4a | Fig_4b + guides(colour = "none") | Fig_4c ) +
-  plot_layout(guides = "collect") +
-  plot_annotation(tag_levels = c("a", "b")) &
-  theme(legend.position = "top", legend.justification = 0,
-        plot.tag = element_text(family = "Futura", size = 12, face = "bold"),
-        plot.tag.position = c(0.05, 0.83))
-
-Fig_4 %>%
-  ggsave(filename = "Fig_4.pdf", path = "Figures",
-         device = cairo_pdf, width = 20, height = 8, units = "cm")
-
-# 6.2 Figure 5 ####
 require(ggh4x)
-Fig_5a <- ggplot() +
+Fig_4a <- ggplot() +
     geom_point(
       data = ASV_sample,
       aes(Days, R_rare, colour = Treatment),
@@ -2083,9 +1943,9 @@ Fig_5a <- ggplot() +
     mytheme +
     theme(axis.title.y = element_text(margin = margin(r = 0)))
     
-Fig_5a
+Fig_4a
 
-Fig_5b <- ggplot() +
+Fig_4b <- ggplot() +
     geom_point(
       data = ASV_sample,
       aes(Days, G * 100, colour = Treatment),
@@ -2113,9 +1973,9 @@ Fig_5b <- ggplot() +
     mytheme +
     theme(axis.title.y = element_text(margin = margin(r = 0)))
     
-Fig_5b
+Fig_4b
 
-Fig_5c <- ggplot() +
+Fig_4c <- ggplot() +
     geom_point(
       data = ASV_sample,
       aes(Days, Saprotrophs * 100, colour = Treatment),
@@ -2143,29 +2003,206 @@ Fig_5c <- ggplot() +
     mytheme +
     theme(axis.title.y = element_text(margin = margin(r = 0)))
     
-Fig_5c
+Fig_4c
 
-Fig_5 <- ( 
-  ( Fig_5a +
+require(patchwork)
+Fig_4 <- ( 
+  ( Fig_4a +
       theme(axis.title.x = element_blank(),
             axis.text.x = element_blank(),
             plot.margin = margin(0, 0.5, 0.2, 0, unit = "cm")) ) / 
-  ( Fig_5b +
+  ( Fig_4b +
       theme(axis.title.x = element_blank(),
             axis.text.x = element_blank(),
             strip.text = element_blank(),
             plot.margin = margin(0.5, 0.5, 0.2, 0, unit = "cm")) ) / 
-  ( Fig_5c +
+  ( Fig_4c +
       theme(strip.text = element_blank(),
             plot.margin = margin(0.5, 0.5, 0.2, 0, unit = "cm")) )
 )
 
-Fig_5
+Fig_4
+
+Fig_4 %>%
+  ggsave(filename = "Fig_4.pdf", path = "Figures",
+         device = cairo_pdf, height = 15, width = 20, units = "cm")
+
+# 6.2 Figure 5 ####
+# 6.2.1 Figure 5a ####
+# This is the multidimensional community structure figure.
+# I am using relative abundance in all cases.
+Fig_5a <- nmds_prior_posterior %>%
+  pivot_wider(names_from = k, values_from = mu) %>%
+  filter(Treatment != "Prior") %>%
+  mutate(Treatment = Treatment %>% fct_drop() %>%
+           fct_relevel("Baseline", "Dark 15°C")) %>%
+  ggplot() +
+    geom_point(
+      data = ASV_sample %>%
+        mutate(
+          Treatment = if_else(Days == 0, "Baseline", Treatment) %>% 
+            fct_relevel("Baseline", "Dark 15°C")
+        ),
+      aes(MDS1_abund, MDS2_abund, colour = Treatment),
+      size = 2, shape = 16
+    ) +
+    # geom_polygon(
+    #   data = ASV_sample %>%
+    #     mutate(
+    #       Treatment = if_else(Days == 0, "Baseline", Treatment) %>% 
+    #         fct_relevel("Baseline", "Dark 15°C")
+    #     ) %>% group_by(Treatment) %>%
+    #     slice(chull(MDS1_abund, MDS2_abund)),
+    #   aes(MDS1_abund, MDS2_abund,
+    #       fill = Treatment, colour = Treatment),
+    #   alpha = 0.2, linejoin = "round"
+    # ) +
+    geom_hdr(
+      aes(MDS1, MDS2, fill = Treatment), 
+      probs = c(.5, .8, .9), n = 800
+    ) +
+    geom_ribbon( # hack to vertically shift densities
+      stat = "density",
+      aes(x = MDS1, ymin = -2, 
+          ymax = after_stat(density) * 0.3 - 2, 
+          fill = Treatment),
+      alpha = 0.79, colour = NA, n = 2^10, bw = 5 * 0.01
+    ) +
+    geom_ribbon(
+      stat = "density",
+      orientation = "y",
+      aes(y = MDS2, xmin = -3,
+          xmax = after_stat(density) * 0.3 - 3,
+          fill = Treatment),
+      alpha = 0.79, colour = NA, n = 2^10, bw = 5 * 0.01
+    ) +
+    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
+                        guide = "none") +
+    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c")) +
+    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
+    scale_x_continuous(limits = c(-3, 1.5), oob = scales::oob_keep) +
+    scale_y_continuous(limits = c(-2, 1.5), oob = scales::oob_keep) +
+    coord_cartesian(expand = F, clip = "off") +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm"),
+          panel.border = element_rect(linejoin = "mitre"))
+Fig_5a
+
+# 6.2.2 Figure 5b ####
+Fig_5b <- ASV_sample %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  left_join(
+    ASV_sample %>%
+      mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+      summarise(MDS1_mean = mean(MDS1_abund),
+                MDS2_mean = mean(MDS2_abund),
+                .by = c(Treatment, Days))
+  ) %>%
+  mutate(
+    Treatment = Treatment %>% fct_relevel("Baseline", "Dark 15°C")
+  ) %>%
+  ggplot() +
+    geom_point(aes(MDS1_abund, MDS2_abund, colour = Treatment),
+               size = 2, shape = 16, alpha = 0.2) +
+    geom_segment(aes(x = MDS1_abund, y = MDS2_abund, 
+                     xend = MDS1_mean, yend = MDS2_mean,
+                     colour = Treatment), alpha = 0.2,
+                 lineend = "round") +
+    geom_path(data = . %>% distinct(Days, Treatment, MDS1_mean, MDS2_mean) %>% 
+                mutate(count = if_else(Days == 0, 4, 1)) %>% uncount(count) %>%
+                mutate(
+                  Treatment = case_when(
+                    row_number() == 1 ~ "Light 15°C",
+                    row_number() == 2 ~ "Dark 15°C",
+                    row_number() == 3 ~ "Light 20°C",
+                    row_number() == 4 ~ "Light 25°C",
+                    TRUE ~ Treatment
+                  ) %>% fct_relevel("Dark 15°C")
+                ),
+              aes(MDS1_mean, MDS2_mean, colour = Treatment),
+              arrow = arrow(length = unit(0.2, "cm"), 
+                            type = "closed", angle = 20),
+              lineend = "round", linejoin = "round") +
+    # geom_hdr(
+    #   data = nmds_time_prior_posterior %>%
+    #     pivot_wider(names_from = k, values_from = mu) %>%
+    #     filter(Treatment != "Prior") %>%
+    #     mutate(Treatment = Treatment %>% fct_drop() %>%
+    #              fct_relevel("Baseline", "Dark 15°C")),
+    #   aes(MDS1, MDS2, fill = Treatment, group = interaction(Treatment, Day)), 
+    #   probs = c(.5, .8, .9), n = 800
+    # ) +
+    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
+                        guide = "none") +
+    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
+                      guide = "none") +
+    scale_alpha_manual(values = c(0.3, 0.58, 0.79), guide = "none") +
+    coord_cartesian(clip = "off") +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm"),
+          panel.border = element_rect(linejoin = "mitre"))
+
+Fig_5b
+
+# 6.2.3 Figure 5c ####
+Fig_5c <- ASV_sample %>%
+  mutate(Treatment = if_else(Days == 0, "Baseline", Treatment)) %>%
+  ggplot() + # dbRDA randomly flips axis signs, so I am reversing that
+    geom_point(aes(dbRDA1_abund, dbRDA2_abund, colour = Treatment),
+               size = 2, shape = 16) +
+    geom_polygon(data = . %>% group_by(Treatment) %>%
+                   slice(chull(dbRDA1_abund, dbRDA2_abund)),
+                 aes(dbRDA1_abund, dbRDA2_abund,
+                     fill = Treatment, colour = Treatment),
+                 alpha = 0.2, linejoin = "round") +
+    # geom_textsegment(data = effects %>% filter(Response == "Abundance"),
+    #           aes(x = 1, y = 2, xend = dbRDA1+1, yend = dbRDA2+2,
+    #               label = label), hjust = 1, family = "Futura", size = 3.5, # ~10 pt
+    #           arrow = arrow(length = unit(0.3, "cm"),
+    #                         type = "closed", angle = 20)) +
+    geom_segment(data = effects %>% filter(Response == "Abundance"),
+                 aes(x = 0.9, y = 1.55, xend = dbRDA1+0.9, yend = dbRDA2+1.55),
+                 arrow = arrow(length = unit(0.2, "cm"),
+                               type = "closed", angle = 20),
+                 lineend = "round", linejoin = "round") +
+    geom_text(data = effects %>% filter(Response == "Abundance"),
+              aes(dbRDA1+0.9, dbRDA2+1.55, label = label),
+              hjust = c(0.4, 0.5, 0), vjust = c(1.3, -0.3, -0.3),
+              family = "Futura", size.unit = "pt", size = 10) +
+    scale_colour_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
+                        guide = "none") +
+    scale_fill_manual(values = c("#C3B300", "#2e4a5b", "#6a98b4", "#f5a54a", "#d1750c"),
+                      guide = "none") +
+    coord_cartesian(clip = "off") +
+    mytheme +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.line = element_blank(),
+          plot.margin = margin(0.2, 0.2, 0.2, 0.2, unit = "cm"),
+          panel.border = element_rect(linejoin = "mitre"))
+Fig_5c
+
+# 6.2.4 Combined panels ####
+# Fig_5b has different colour guides, which I remove
+Fig_5 <- ( Fig_5a | Fig_5b + guides(colour = "none") | Fig_5c ) +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = c("a", "b")) &
+  theme(legend.position = "top", legend.justification = 0,
+        plot.tag = element_text(family = "Futura", size = 12, face = "bold"),
+        plot.tag.position = c(0.05, 0.83))
 
 Fig_5 %>%
   ggsave(filename = "Fig_5.pdf", path = "Figures",
-         device = cairo_pdf, height = 15, width = 20, units = "cm")
-
+         device = cairo_pdf, width = 20, height = 8, units = "cm")
 
 # 6.3 Figure S1 ####
 # Rarefaction curves
